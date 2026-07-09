@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ZenDing Notify</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">ZD</div>
+        <div>
+          <strong>ZenDing Notify</strong>
+          <span>禅道钉钉通知助手</span>
+        </div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-view="overview"><span>总览</span></button>
+        <button class="nav-item" data-view="defects"><span>缺陷列表</span></button>
+        <button class="nav-item" data-view="logs"><span>推送记录</span></button>
+        <button class="nav-item" data-view="actions"><span>手动推送</span></button>
+        <button class="nav-item" data-view="settings"><span>配置</span></button>
+      </nav>
+      <div class="status-box" id="configStatus"></div>
+    </aside>
+
+    <main class="main">
+      <header class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">Defect Operations</span>
+          <h1 id="viewTitle">总览</h1>
+          <p id="viewSubtitle">当天缺陷处理情况与剩余风险</p>
+        </div>
+        <div class="hero-actions">
+          <button class="primary icon-button" id="refreshBtn" type="button" title="同步更新" aria-label="同步更新">
+            <svg class="refresh-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 12a9 9 0 0 1-15.3 6.4" />
+              <path d="M3 12a9 9 0 0 1 15.3-6.4" />
+              <path d="M18 2v4h-4" />
+              <path d="M6 22v-4h4" />
+            </svg>
+          </button>
+          <span class="last-sync" id="lastSyncText">最近更新：-</span>
+        </div>
+      </header>
+
+      <section id="overviewView" class="view active">
+        <div class="metrics" id="metrics"></div>
+        <div class="split">
+          <section class="panel urgent-panel">
+            <div class="panel-head">
+              <div>
+                <h2>P1/P2 待处理 <span class="count-badge" id="urgentCount">0</span></h2>
+                <p>需要优先处理并在 18:00 提醒</p>
+              </div>
+              <span class="head-tag urgent">紧急</span>
+            </div>
+            <div id="urgentList" class="defect-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>非 P1/P2 待处理 <span class="count-badge" id="normalCount">0</span></h2>
+                <p>低紧急度缺陷，保留在总览中跟踪</p>
+              </div>
+              <span class="head-tag normal">普通</span>
+            </div>
+            <div id="normalList" class="defect-list"></div>
+          </section>
+        </div>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>负责人统计</h2>
+          </div>
+          <div id="ownerTable"></div>
+        </section>
+      </section>
+
+      <section id="defectsView" class="view">
+        <div class="condition-bar hidden" id="defectConditionBar">
+          <span id="defectConditionText"></span>
+          <button type="button" class="condition-close" id="clearDefectCondition" aria-label="清除筛选">×</button>
+        </div>
+        <div class="toolbar">
+          <select id="priorityFilter">
+            <option value="all">全部优先级</option>
+            <option value="urgent">仅 P1/P2</option>
+            <option value="normal">非 P1/P2</option>
+          </select>
+          <select id="defectSort">
+            <option value="priorityHigh">优先级高到低</option>
+            <option value="priorityLow">优先级低到高</option>
+          </select>
+          <div class="multi-select" id="ownerMultiSelect">
+            <button type="button" class="multi-select-trigger" id="ownerFilterTrigger">全部负责人</button>
+            <div class="multi-select-menu" id="ownerFilterMenu"></div>
+          </div>
+          <select id="statusFilter">
+            <option value="all">全部状态</option>
+            <option value="active" selected>激活</option>
+            <option value="resolved">已解决</option>
+            <option value="closed">已关闭</option>
+          </select>
+          <select id="openedAgeFilter">
+            <option value="all">全部创建时间</option>
+            <option value="today">今天</option>
+            <option value="yesterday">昨天</option>
+            <option value="beforeYesterday">前天</option>
+            <option value="overdue">更早之前</option>
+          </select>
+          <button type="button" class="secondary reset-filter-button" id="resetDefectFiltersBtn">重置</button>
+        </div>
+        <section class="panel">
+          <div class="panel-head compact">
+            <div>
+              <h2>缺陷列表 <span class="count-badge" id="defectsCount">0</span></h2>
+              <p>复制内容会按当前筛选和排序生成</p>
+            </div>
+            <button type="button" class="secondary copy-button" id="copyDefectsBtn">复制缺陷列表</button>
+          </div>
+          <div id="defectsTable"></div>
+        </section>
+      </section>
+
+      <section id="logsView" class="view">
+        <section class="panel">
+          <div id="logsTable"></div>
+        </section>
+      </section>
+
+      <section id="actionsView" class="view">
+        <div class="action-grid">
+          <button class="action-card" data-action="/api/actions/push/yesterday">
+            <span class="action-icon">9:40</span>
+            <strong>昨日处理日报</strong>
+            <span>模拟每天 09:40 的日报</span>
+          </button>
+          <button class="action-card danger" data-action="/api/actions/push/p1p2">
+            <span class="action-icon">18:00</span>
+            <strong>P1/P2 风险提醒</strong>
+            <span>模拟每天 18:00 的紧急缺陷提醒</span>
+          </button>
+          <button class="action-card danger" data-action="/api/actions/push/overdue">
+            <span class="action-icon">超期</span>
+            <strong>超期缺陷单</strong>
+            <span>推送当前超期激活缺陷列表</span>
+          </button>
+        </div>
+        <pre id="actionResult" class="result hidden"></pre>
+      </section>
+
+      <section id="settingsView" class="view">
+        <form id="configForm" class="settings-form">
+          <div class="settings-scroll">
+            <section class="panel form-panel">
+              <div class="panel-head">
+                <div>
+                  <h2>禅道连接</h2>
+                  <p>启用后会从真实禅道 REST API 抓取缺陷</p>
+                </div>
+              </div>
+              <div class="form-grid">
+                <label class="field toggle-field">
+                  <input type="checkbox" id="zentaoEnabled">
+                  <span>启用真实禅道抓取</span>
+                </label>
+                <label class="field">
+                  <span>禅道地址</span>
+                  <input id="zentaoBaseUrl" placeholder="https://zentao.example.com">
+                </label>
+                <label class="field">
+                  <span>登录账号</span>
+                  <input id="zentaoAccount" autocomplete="username">
+                </label>
+                <label class="field">
+                  <span>登录密码</span>
+                  <input id="zentaoPassword" type="password" autocomplete="current-password">
+                </label>
+                <label class="field wide">
+                  <span>禅道 Cookie</span>
+                  <textarea id="zentaoCookie" rows="4" spellcheck="false" placeholder="从浏览器复制当前禅道站点的 Cookie；填写后优先使用已登录会话抓取"></textarea>
+                </label>
+                <label class="field wide">
+                  <span>产品 ID 列表</span>
+                  <input id="zentaoProductIds" placeholder="1,2,3">
+                </label>
+                <label class="field">
+                  <span>项目/迭代 ID</span>
+                  <input id="zentaoProjectId" type="number" placeholder="2635">
+                </label>
+              </div>
+            </section>
+
+            <section class="panel form-panel">
+              <div class="panel-head">
+                <div>
+                  <h2>缺陷规则</h2>
+                  <p>总览显示规则内全部未完成缺陷，18:00 只提醒紧急优先级</p>
+                </div>
+              </div>
+              <div class="form-grid">
+                <label class="field">
+                  <span>缺陷状态</span>
+                  <input id="ruleStatuses" placeholder="active,changing">
+                </label>
+                <label class="field">
+                  <span>全部优先级</span>
+                  <input id="rulePriorities" placeholder="1,2,3,4">
+                </label>
+                <label class="field">
+                  <span>紧急优先级</span>
+                  <input id="ruleUrgentPriorities" placeholder="1,2">
+                </label>
+                <label class="field wide">
+                  <span>只看这些负责人</span>
+                  <div class="checkbox-picker" id="assigneePicker"></div>
+                </label>
+              </div>
+            </section>
+
+            <section class="panel form-panel">
+              <div class="panel-head">
+                <div>
+                  <h2>钉钉机器人</h2>
+                  <p>填写机器人 Webhook；开启加签时再填写 Secret</p>
+                </div>
+              </div>
+              <div class="form-grid">
+                <label class="field toggle-field">
+                  <input type="checkbox" id="dingDryRun">
+                  <span>Dry-run 模式</span>
+                </label>
+                <label class="field wide">
+                  <span>Webhook</span>
+                  <input id="dingWebhook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=...">
+                </label>
+                <label class="field wide">
+                  <span>加签 Secret</span>
+                  <input id="dingSecret" type="password">
+                </label>
+              </div>
+            </section>
+
+            <section class="panel form-panel">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title-row">
+                    <h2>定时任务</h2>
+                    <label class="switch-field" title="开启或关闭所有定时任务">
+                      <input type="checkbox" id="scheduleEnabled">
+                      <span class="switch-track" aria-hidden="true"></span>
+                    </label>
+                  </div>
+                  <p>开关切换立即生效，时间配置保存后生效</p>
+                </div>
+              </div>
+              <div class="form-grid schedule-grid">
+                <label class="field">
+                  <span>自动抓取间隔分钟</span>
+                  <input id="scheduleFetchMinutes" type="number" min="1">
+                </label>
+                <div class="schedule-rule-field time-picker-trigger" data-time-target="scheduleYesterdayTime">
+                  <label class="field">
+                    <span>昨日日报时间</span>
+                    <input id="scheduleYesterdayTime" type="time">
+                  </label>
+                  <label class="switch-field" title="开启或关闭昨日日报推送">
+                    <input type="checkbox" id="scheduleYesterdayEnabled" data-scheduler-rule="yesterday">
+                    <span class="switch-track" aria-hidden="true"></span>
+                  </label>
+                </div>
+                <div class="schedule-rule-field">
+                  <div class="field">
+                    <div class="field-label-row">
+                      <span>P1/P2 提醒时间（可多个）</span>
+                      <label class="switch-field" title="开启或关闭 P1/P2 风险提醒">
+                        <input type="checkbox" id="scheduleP1P2Enabled" data-scheduler-rule="p1p2">
+                        <span class="switch-track" aria-hidden="true"></span>
+                      </label>
+                    </div>
+                    <div class="time-list" id="p1p2TimesList"></div>
+                    <button type="button" class="mini-button add-time-button" id="addP1P2Time">添加时间</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel form-panel">
+              <div class="panel-head">
+                <div>
+                  <h2>人员映射</h2>
+                  <p>JSON 格式，禅道账号映射到钉钉手机号</p>
+                </div>
+              </div>
+              <label class="field">
+                <span>映射 JSON</span>
+                <textarea id="userMappings" rows="10" spellcheck="false"></textarea>
+              </label>
+            </section>
+          </div>
+
+          <div class="settings-actions">
+            <button type="submit" class="primary">保存配置</button>
+            <button type="button" class="secondary" id="reloadConfigBtn">重新加载</button>
+          </div>
+          <div id="configResult" class="form-feedback hidden" role="status" aria-live="polite"></div>
+        </form>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="logModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="logModalTitle">
+      <section class="modal-panel">
+        <div class="modal-head">
+          <div>
+            <strong id="logModalTitle">推送内容</strong>
+            <span id="logModalMeta"></span>
+          </div>
+          <button type="button" class="modal-close" id="closeLogModal" aria-label="关闭">×</button>
+        </div>
+        <div id="logModalContent" class="markdown-content"></div>
+      </section>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

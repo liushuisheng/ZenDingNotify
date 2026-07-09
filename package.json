@@ -1,0 +1,15 @@
+{
+  "name": "zend-ing-notify",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ZenTao defect reminder and DingTalk notification dashboard.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "check": "node --check src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
