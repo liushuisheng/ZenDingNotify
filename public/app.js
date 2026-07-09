@@ -293,6 +293,7 @@ function renderDefectCards(defects, urgent) {
       </div>
       <div class="meta">
         ${isFatal(defect) ? `<span class="pill fatal">致命</span>` : ""}
+        ${renderNewPendingPill(defect)}
         ${isReactivatedByTestToFrontendDefect(defect) ? `<span class="pill reactivated">重新激活</span>` : ""}
         ${ageLabel ? `<span class="pill age ${ageLabel === "超期" ? "overdue" : ""}">${ageLabel}</span>` : ""}
         <span class="pill ${urgent ? "urgent" : ""}">P${escapeHtml(defect.priority)}</span>
@@ -327,7 +328,7 @@ function renderDefects(options = {}) {
   defects = applyDefectListMode(defects, state.defectListMode);
   defects = applyStatusFilter(defects, status);
   defects = applyOpenedAgeFilter(defects, openedAge);
-  if (!["resolvedPendingVerify", "ownerPendingTest", "ownerTodayTransferred", "ownerTodayReturned"].includes(state.defectListMode)) {
+  if (!["todayAdded", "resolvedPendingVerify", "ownerPendingTest", "ownerTodayAdded", "ownerTodayTransferred", "ownerTodayReturned"].includes(state.defectListMode)) {
     defects = defects.filter(isCurrentTerminalDefect);
   }
   defects = sortDefectsByMode(defects, sort);
@@ -356,7 +357,7 @@ function renderDefects(options = {}) {
         badge(["1", "2"].includes(String(defect.priority)) ? "urgent" : "normal", `P${defect.priority}`),
         badge(statusBadgeTone(defect.status), statusText(defect.status))
       ];
-      if (showOwnerColumn) row.push(titledText(getDefectOwnerNameForMode(defect, state.defectListMode)));
+      if (showOwnerColumn) row.push(ownerCell(defect, state.defectListMode));
       if (showResolverColumn) row.push(titledText(formatPersonDisplayName(getResolverNameForMode(defect, state.defectListMode))));
       if (showClosedByColumn) row.push(titledText(formatPersonDisplayName(defect.closedBy)));
       if (terminalDateColumn) row.push(formatTime(getTerminalDate(defect)));
@@ -459,6 +460,26 @@ function getDefectOwnerNameForMode(defect, mode) {
   return getDefectOwnerName(defect);
 }
 
+function ownerCell(defect, mode) {
+  const owner = formatPersonDisplayName(getDefectOwnerNameForMode(defect, mode));
+  const note = getOwnerTransferNote(defect, mode);
+  if (!note) return titledText(owner);
+  const title = `${owner} ${note}`;
+  return `
+    <div class="owner-cell" title="${escapeHtml(title)}">
+      <span class="ellipsis-cell">${escapeHtml(owner)}</span>
+      <small>${escapeHtml(note)}</small>
+    </div>
+  `;
+}
+
+function getOwnerTransferNote(defect, mode) {
+  if (mode !== "todayAdded") return "";
+  if (!isTodayTransferredDefect(defect)) return "";
+  if (!isFrontendOwner(defect.assignedFrom)) return "";
+  return `【由${formatPersonDisplayName(defect.assignedFrom)}转入】`;
+}
+
 function getFrontendDeveloperName(defect) {
   if (isFrontendOwner(defect.resolvedBy)) return defect.resolvedBy;
   if (isFrontendOwner(defect.assignedFrom)) return defect.assignedFrom;
@@ -484,17 +505,20 @@ function isConfiguredPersonDefect(defect, mode) {
   if (mode === "ownerTodayTransferred" && isTodayTransferredDefect(defect)) {
     return configured.some((assignee) => namesMatch(defect.assignedFrom, assignee));
   }
+  if (mode === "todayAdded" && isTodayTransferredDefect(defect)) {
+    return configured.some((assignee) => namesMatch(defect.assignedFrom, assignee));
+  }
   if (mode === "ownerTodayReturned" && isTodayReturnedDefect(defect)) {
     return configured.some((assignee) => namesMatch(defect.assignedTo, assignee));
+  }
+  if (mode === "ownerTodayAdded" && isTodayInitiallyAssignedDefect(defect)) {
+    return configured.some((assignee) => namesMatch(getInitialAssignedTo(defect), assignee));
   }
   if (["resolved", "closed"].includes(normalizeStatus(defect.status))) {
     return configured.some((assignee) => [defect.resolvedBy, defect.assignedFrom].some((value) => namesMatch(value, assignee)));
   }
   if (isTestOwner(defect.assignedTo)) {
     return configured.some((assignee) => namesMatch(defect.assignedFrom, assignee));
-  }
-  if (mode === "ownerTodayAdded" && isTodayInitiallyAssignedDefect(defect)) {
-    return configured.some((assignee) => namesMatch(getInitialAssignedTo(defect), assignee));
   }
   return configured.some((assignee) => namesMatch(defect.assignedTo, assignee));
 }
@@ -1216,6 +1240,7 @@ function formatPersonDisplayName(value) {
 function renderCell(value) {
   const text = String(value ?? "");
   if (text.startsWith("<span class=\"table-badge") || text.startsWith("<span class=\"ellipsis-cell") || text.startsWith("<a class=\"ellipsis-cell")) return text;
+  if (text.trim().startsWith("<div class=\"owner-cell")) return text;
   if (text.startsWith("<button class=\"owner-stat-link")) return text;
   return escapeHtml(text);
 }
@@ -1396,6 +1421,35 @@ function isToday(value) {
   if (Number.isNaN(date.getTime())) return false;
   const now = new Date();
   return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+}
+
+function isNewPendingDefect(defect) {
+  return isWithinRecentHours(defect.openedDate, 4) || isRecentlyTransferredInDefect(defect);
+}
+
+function renderNewPendingPill(defect) {
+  if (!isNewPendingDefect(defect)) return "";
+  const isTransferredIn = isRecentlyTransferredInDefect(defect);
+  const label = isTransferredIn ? "转入时间" : "创建时间";
+  const value = isTransferredIn ? defect.assignedAt : defect.openedDate;
+  return `<span class="pill new" title="${label}：${escapeHtml(formatTime(value))}">新</span>`;
+}
+
+function isRecentlyTransferredInDefect(defect) {
+  return (
+    Boolean(defect.assignedFrom)
+    && Boolean(defect.assignedTo)
+    && !namesMatch(defect.assignedFrom, defect.assignedTo)
+    && isWithinRecentHours(defect.assignedAt, 4)
+  );
+}
+
+function isWithinRecentHours(value, hours) {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  const diff = Date.now() - date.getTime();
+  return diff >= 0 && diff <= hours * 60 * 60 * 1000;
 }
 
 function normalizeDateTime(value) {
