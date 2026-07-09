@@ -263,7 +263,7 @@ function renderOverview() {
   document.getElementById("normalCount").textContent = overview.normalOpen.length;
 
   document.getElementById("ownerTable").innerHTML = renderTable(
-    ["负责人", "未处理缺陷", "P1/P2 未处理", "普通未处理", "待测试", "今日新增", "今日转单", "今日被打回", "今日解决"],
+    ["负责人", "未处理缺陷", "P1/P2 未处理", "普通未处理", "待测试", "今日新增", "今日转出", "今日转入", "今日解决"],
     overview.owners.map((owner) => [
       owner.name,
       ownerStatButton(owner, "ownerOpen", getOwnerOpenTotal(owner)),
@@ -331,13 +331,14 @@ function renderDefects(options = {}) {
   if (!["todayAdded", "resolvedPendingVerify", "ownerPendingTest", "ownerTodayAdded", "ownerTodayTransferred", "ownerTodayReturned"].includes(state.defectListMode)) {
     defects = defects.filter(isCurrentTerminalDefect);
   }
-  defects = sortDefectsByMode(defects, sort);
+  defects = sortDefectsByMode(defects, sort, state.defectListMode);
   state.visibleDefects = defects;
   document.getElementById("defectsCount").textContent = defects.length;
   document.getElementById("defectsTable").classList.add("is-scrollable");
   renderDefectConditionBar();
 
-  const terminalDateColumn = getTerminalDateColumn(defects);
+  const modeDateColumn = getModeDateColumn(state.defectListMode, defects);
+  const terminalDateColumn = modeDateColumn || getTerminalDateColumn(defects);
   const showResolverColumn = shouldShowResolverColumn(defects, state.defectListMode);
   const showOwnerColumn = state.defectListMode !== "todayClosed";
   const showClosedByColumn = state.defectListMode === "todayClosed";
@@ -360,7 +361,7 @@ function renderDefects(options = {}) {
       if (showOwnerColumn) row.push(ownerCell(defect, state.defectListMode));
       if (showResolverColumn) row.push(titledText(formatPersonDisplayName(getResolverNameForMode(defect, state.defectListMode))));
       if (showClosedByColumn) row.push(titledText(formatPersonDisplayName(defect.closedBy)));
-      if (terminalDateColumn) row.push(formatTime(getTerminalDate(defect)));
+      if (terminalDateColumn) row.push(formatTime(getModeDate(defect, state.defectListMode) || getTerminalDate(defect)));
       row.push(formatTime(defect.openedDate));
       return row;
     }),
@@ -424,8 +425,8 @@ function getDefectConditionText() {
     ownerNormal: "负责人统计 / 普通未处理",
     ownerPendingTest: "负责人统计 / 待测试",
     ownerTodayAdded: "负责人统计 / 今日新增",
-    ownerTodayTransferred: "负责人统计 / 今日转单",
-    ownerTodayReturned: "负责人统计 / 今日被打回",
+    ownerTodayTransferred: "负责人统计 / 今日转出",
+    ownerTodayReturned: "负责人统计 / 今日转入",
     ownerTodayResolved: "负责人统计 / 今日解决"
   };
   const ownerText = state.ownerFilters.length ? ` · ${state.ownerFilters.join("、")}` : "";
@@ -531,6 +532,31 @@ function getTerminalDateColumn(defects) {
   if (statuses.size === 1 && statuses.has("resolved")) return "解决时间";
   if (statuses.size === 1 && statuses.has("closed")) return "关闭时间";
   return "解决时间/关闭时间";
+}
+
+function getModeDateColumn(mode, defects) {
+  if (!defects.length) return "";
+  const map = {
+    todayClosed: "关闭时间",
+    resolvedPendingVerify: "解决时间",
+    ownerTodayTransferred: "转出时间",
+    ownerTodayReturned: "转入时间"
+  };
+  return map[mode] || "";
+}
+
+function getModeDate(defect, mode) {
+  const map = {
+    todayAdded: () => defect.openedDate,
+    todayResolved: () => getDeveloperResolvedAt(defect) || getTerminalDate(defect),
+    todayClosed: () => defect.closedDate,
+    resolvedPendingVerify: () => getDeveloperResolvedAt(defect) || getTerminalDate(defect),
+    ownerTodayAdded: () => defect.openedDate,
+    ownerTodayTransferred: () => defect.assignedAt,
+    ownerTodayReturned: () => defect.assignedAt,
+    ownerTodayResolved: () => getDeveloperResolvedAt(defect) || getTerminalDate(defect)
+  };
+  return map[mode]?.() || "";
 }
 
 function getTerminalDate(defect) {
@@ -1104,16 +1130,23 @@ async function saveConfig(event) {
 
 function renderTable(headers, rows, className = "") {
   if (!rows.length) return `<div class="empty">暂无数据</div>`;
+  const columnClasses = headers.map(getColumnClass);
   return `
     <table class="${escapeHtml(className)}">
       <thead>
-        <tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
+        <tr>${headers.map((header, index) => `<th class="${columnClasses[index]}">${escapeHtml(header)}</th>`).join("")}</tr>
       </thead>
       <tbody>
-        ${rows.map((row) => `<tr>${row.map((cell) => `<td>${renderCell(cell)}</td>`).join("")}</tr>`).join("")}
+        ${rows.map((row) => `<tr>${row.map((cell, index) => `<td class="${columnClasses[index]}">${renderCell(cell)}</td>`).join("")}</tr>`).join("")}
       </tbody>
     </table>
   `;
+}
+
+function getColumnClass(header) {
+  if (["负责人", "解决人"].includes(header)) return "col-person";
+  if (["创建时间", "解决时间", "关闭时间", "解决时间/关闭时间", "转入时间", "转出时间"].includes(header)) return "col-time";
+  return "";
 }
 
 function renderAssigneePicker(selectedAssignees) {
@@ -1301,9 +1334,40 @@ function sortDefectsForDisplay(defects) {
   });
 }
 
-function sortDefectsByMode(defects, mode) {
-  if (mode === "priorityLow") return sortDefectsByPriority(defects, -1);
+function sortDefectsByMode(defects, sort, listMode) {
+  if (isTimeDescListMode(listMode)) return sortDefectsByDateDesc(defects, (defect) => getModeDate(defect, listMode));
+  if (sort === "priorityLow") return sortDefectsByPriority(defects, -1);
   return sortDefectsByPriority(defects, 1);
+}
+
+function isTimeDescListMode(mode) {
+  return [
+    "todayAdded",
+    "todayResolved",
+    "todayClosed",
+    "resolvedPendingVerify",
+    "ownerTodayAdded",
+    "ownerTodayTransferred",
+    "ownerTodayReturned",
+    "ownerTodayResolved"
+  ].includes(mode);
+}
+
+function sortDefectsByDateDesc(defects, getDate) {
+  return [...defects].sort((a, b) => {
+    const timeDiff = dateSortValue(getDate(b)) - dateSortValue(getDate(a));
+    if (timeDiff) return timeDiff;
+    const priorityDiff = priorityValue(a.priority) - priorityValue(b.priority);
+    if (priorityDiff) return priorityDiff;
+    const fatalDiff = Number(isFatal(b)) - Number(isFatal(a));
+    if (fatalDiff) return fatalDiff;
+    return Number(b.id || 0) - Number(a.id || 0);
+  });
+}
+
+function dateSortValue(value) {
+  const time = new Date(value || "").getTime();
+  return Number.isFinite(time) ? time : 0;
 }
 
 function sortDefectsByPriority(defects, direction) {
@@ -1399,7 +1463,15 @@ function formatTime(value) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("zh-CN", { hour12: false });
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
 }
 
 function formatCompactTime(value) {
@@ -1411,6 +1483,7 @@ function formatCompactTime(value) {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
     hour12: false
   });
 }
@@ -1452,7 +1525,7 @@ function isWithinRecentHours(value, hours) {
   return diff >= 0 && diff <= hours * 60 * 60 * 1000;
 }
 
-function normalizeDateTime(value) {
+function normalizeDateMinute(value) {
   return String(value || "").trim().slice(0, 16);
 }
 
@@ -1496,7 +1569,7 @@ function isTodayTransferredDefect(defect) {
 function isResolvedByTransferAction(defect) {
   if (normalizeStatus(defect.assignedStatusAfter) === "resolved") return true;
   return Boolean(defect.resolvedDate)
-    && normalizeDateTime(defect.resolvedDate) === normalizeDateTime(defect.assignedAt)
+    && normalizeDateMinute(defect.resolvedDate) === normalizeDateMinute(defect.assignedAt)
     && namesMatch(defect.resolvedBy, defect.assignedFrom);
 }
 

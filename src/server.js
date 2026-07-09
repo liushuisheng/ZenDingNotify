@@ -700,6 +700,7 @@ function getOverdueReportDefects() {
   return sortDefectsByPriority(
     getFilteredDefects({ includeStatuses: false })
       .filter(isConfiguredPersonDefect)
+      .filter(isPushVisibleDefect)
       .filter((defect) => FRONTEND_OWNERS.some((owner) => namesEqual(getDefectOwnerName(defect), owner)))
       .filter((defect) => normalizeZentaoStatus(defect.status) === "active")
       .filter((defect) => getOpenedAgeBucket(defect.openedDate) === "overdue")
@@ -1035,7 +1036,9 @@ function normalizeZentaoDate(value) {
 }
 
 function normalizeZentaoDateTime(value) {
-  return normalizeZentaoDate(String(value || "").trim()).slice(0, 16);
+  const text = normalizeZentaoDate(String(value || "").trim());
+  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/.test(text)) return `${text}:00`;
+  return text;
 }
 
 function getRecentPushLogs() {
@@ -1185,7 +1188,10 @@ function isOpenDefect(defect) {
 }
 
 function isPushVisibleDefect(defect) {
-  return !isTestOwner(defect.assignedTo);
+  if (isTestOwner(defect.assignedTo)) return false;
+  const assignees = getConfiguredAssigneeNames();
+  if (!assignees.length) return true;
+  return assignees.includes(normalizeAssigneeName(defect.assignedTo));
 }
 
 function isVisibleOpenOverviewDefect(defect) {
@@ -1278,7 +1284,7 @@ function namesEqual(left, right) {
 }
 
 function isSameMinute(left, right) {
-  return normalizeZentaoDateTime(left) === normalizeZentaoDateTime(right);
+  return normalizeZentaoDateTime(left).slice(0, 16) === normalizeZentaoDateTime(right).slice(0, 16);
 }
 
 function scheduleJobs() {

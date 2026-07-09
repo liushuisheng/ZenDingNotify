@@ -181,7 +181,7 @@ nav {
 
 .main.list-mode {
   display: grid;
-  grid-template-rows: auto minmax(0, calc(100vh - 154px));
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -365,15 +365,21 @@ h2 {
   min-height: 0;
 }
 
+.main.list-mode #defectsView.active {
+  display: flex;
+  flex-direction: column;
+}
+
+.main.list-mode #defectsView > .condition-bar,
+.main.list-mode #defectsView > .toolbar {
+  flex: 0 0 auto;
+}
+
 .main.list-mode #defectsView > .panel,
 .main.list-mode #defectsTable,
 .main.list-mode #logsView .panel,
 .main.list-mode #logsTable {
   min-height: 0;
-}
-
-.main.list-mode #defectsView.active {
-  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .main.list-mode #defectsView > .panel,
@@ -382,6 +388,7 @@ h2 {
 }
 
 .main.list-mode #defectsView > .panel {
+  flex: 1 1 auto;
   grid-template-rows: auto minmax(0, 1fr);
 }
 
@@ -808,7 +815,7 @@ h2 {
 }
 
 .condition-bar {
-  min-height: 42px;
+  height: 42px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -820,6 +827,13 @@ h2 {
   color: var(--primary-dark);
   font-size: 13px;
   font-weight: 800;
+}
+
+#defectConditionText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .condition-close {
@@ -1022,6 +1036,10 @@ table {
   scrollbar-color: rgba(100, 116, 139, 0.36) transparent;
 }
 
+.main.list-mode #defectsTable.is-scrollable {
+  display: block;
+}
+
 #defectsTable.is-scrollable th {
   position: sticky;
   top: 0;
@@ -1103,6 +1121,16 @@ table {
 .defects-data-table th:nth-child(8),
 .defects-data-table td:nth-child(8) {
   width: 122px;
+}
+
+.defects-data-table th.col-person,
+.defects-data-table td.col-person {
+  width: 96px;
+}
+
+.defects-data-table th.col-time,
+.defects-data-table td.col-time {
+  width: 190px;
 }
 
 th,
