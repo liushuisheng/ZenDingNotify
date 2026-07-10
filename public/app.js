@@ -433,11 +433,15 @@ function renderDefects(options = {}) {
 
   const modeDateColumn = getModeDateColumn(state.defectListMode, defects);
   const terminalDateColumn = modeDateColumn || getTerminalDateColumn(defects);
-  const showResolverColumn = shouldShowResolverColumn(defects, state.defectListMode);
+  const showResolverColumn = state.defectListMode !== "ownerTodayReturned" && shouldShowResolverColumn(defects, state.defectListMode);
   const showOwnerColumn = state.defectListMode !== "todayClosed";
+  const showTransferToColumn = state.defectListMode === "ownerTodayTransferred";
+  const showTransferFromColumn = state.defectListMode === "ownerTodayReturned";
   const showClosedByColumn = state.defectListMode === "todayClosed";
   const headers = ["ID", "标题", "优先级", "状态"];
   if (showOwnerColumn) headers.push("负责人");
+  if (showTransferToColumn) headers.push("转入人");
+  if (showTransferFromColumn) headers.push("转出人");
   if (showResolverColumn) headers.push("解决人");
   if (showClosedByColumn) headers.push("由谁关闭");
   if (terminalDateColumn) headers.push(terminalDateColumn);
@@ -453,6 +457,8 @@ function renderDefects(options = {}) {
         badge(statusBadgeTone(defect.status), statusText(defect.status))
       ];
       if (showOwnerColumn) row.push(ownerCell(defect, state.defectListMode));
+      if (showTransferToColumn) row.push(titledText(formatPersonDisplayName(defect.assignedTo)));
+      if (showTransferFromColumn) row.push(titledText(formatPersonDisplayName(defect.assignedFrom)));
       if (showResolverColumn) row.push(titledText(formatPersonDisplayName(getResolverNameForMode(defect, state.defectListMode))));
       if (showClosedByColumn) row.push(titledText(formatPersonDisplayName(defect.closedBy)));
       if (terminalDateColumn) row.push(formatTime(getModeDate(defect, state.defectListMode) || getTerminalDate(defect)));
