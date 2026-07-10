@@ -9,7 +9,8 @@ const state = {
   visibleDefects: [],
   selectedLogId: null,
   lastFetchAt: "",
-  view: "overview"
+  view: "overview",
+  authenticated: false
 };
 
 const titles = {
@@ -27,6 +28,10 @@ const viewRoutes = {
   actions: "#/actions",
   settings: "#/settings"
 };
+
+const guestMode = window.location.pathname.replace(/\/+$/, "") === "/guest";
+const guestViews = ["overview", "defects"];
+const allowedViews = guestMode ? guestViews : Object.keys(titles);
 
 const roleGroups = [
   {
@@ -57,10 +62,16 @@ const zentaoAccountAliases = {
   chenzuheng: "谌祖恒"
 };
 
+document.body.classList.toggle("guest-mode", guestMode);
 document.querySelectorAll(".nav-item").forEach((button) => {
+  const view = button.dataset.view;
+  const isAllowed = allowedViews.includes(view);
+  button.classList.toggle("hidden", !isAllowed);
+  button.disabled = !isAllowed;
+  if (!isAllowed) return;
   button.addEventListener("click", () => {
-    switchView(button.dataset.view, { updateRoute: button.dataset.view !== "defects" });
-    if (button.dataset.view === "defects") {
+    switchView(view, { updateRoute: view !== "defects" });
+    if (view === "defects") {
       if (getViewFromRoute() !== "defects") resetDefectFiltersToDefault();
       renderDefects();
     }
@@ -97,6 +108,8 @@ document.getElementById("ownerFilterTrigger").addEventListener("click", () => {
   document.getElementById("ownerMultiSelect").classList.toggle("open");
 });
 document.getElementById("configForm").addEventListener("submit", saveConfig);
+document.getElementById("loginForm").addEventListener("submit", loginAdmin);
+document.getElementById("logoutBtn").addEventListener("click", logoutAdmin);
 document.getElementById("reloadConfigBtn").addEventListener("click", loadConfig);
 document.getElementById("scheduleEnabled").addEventListener("change", toggleSchedulerEnabled);
 document.getElementById("addP1P2Time").addEventListener("click", () => addP1P2TimeInput(""));
@@ -130,17 +143,96 @@ document.querySelectorAll(".action-card").forEach((button) => {
   });
 });
 
-switchView(getViewFromRoute(), { updateRoute: false });
-loadAll();
+initApp();
+
+async function initApp() {
+  if (guestMode) {
+    showAppShell();
+    switchView(getViewFromRoute(), { updateRoute: false });
+    await loadAll();
+    return;
+  }
+
+  try {
+    const session = await getJson("/api/session");
+    if (session.authenticated) {
+      state.authenticated = true;
+      showAppShell();
+      switchView(getViewFromRoute(), { updateRoute: false });
+      await loadAll();
+      return;
+    }
+  } catch {
+    // Fall through to the login screen when the session check fails.
+  }
+
+  showLoginScreen();
+}
+
+function showLoginScreen() {
+  state.authenticated = false;
+  document.body.classList.add("login-mode");
+  document.getElementById("loginScreen").classList.remove("hidden");
+  document.getElementById("logoutBtn").classList.add("hidden");
+  renderCurrentRole();
+  document.getElementById("adminPassword").focus();
+}
+
+function showAppShell() {
+  document.body.classList.remove("login-mode");
+  document.getElementById("loginScreen").classList.add("hidden");
+  renderCurrentRole();
+}
+
+function renderCurrentRole() {
+  const roleText = document.getElementById("currentRoleText");
+  const logoutButton = document.getElementById("logoutBtn");
+  const isAdmin = !guestMode && state.authenticated;
+  if (roleText) roleText.textContent = isAdmin ? "管理员登录" : "访客登录";
+  if (logoutButton) logoutButton.classList.toggle("hidden", !isAdmin);
+}
+
+async function loginAdmin(event) {
+  event.preventDefault();
+  const error = document.getElementById("loginError");
+  const password = document.getElementById("adminPassword").value;
+  error.classList.add("hidden");
+  error.textContent = "";
+
+  try {
+    const response = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.message || data.error || "登录失败");
+    state.authenticated = true;
+    document.getElementById("adminPassword").value = "";
+    showAppShell();
+    switchView(getViewFromRoute(), { updateRoute: false });
+    await loadAll();
+  } catch (loginError) {
+    error.textContent = loginError.message;
+    error.classList.remove("hidden");
+  }
+}
+
+async function logoutAdmin() {
+  await fetch("/api/logout", { method: "POST" });
+  state.authenticated = false;
+  state.config = null;
+  showLoginScreen();
+}
 
 async function loadAll() {
-  const [overview, defects, logs, status, assignees, configData] = await Promise.all([
+  const [overview, defects, status, assignees, configData, logs] = await Promise.all([
     getJson("/api/overview"),
     getJson("/api/defects"),
-    getJson("/api/push-logs"),
     getJson("/api/config-status"),
-    getJson("/api/assignees"),
-    getJson("/api/config")
+    guestMode ? Promise.resolve({ assignees: [] }) : getJson("/api/assignees"),
+    getJson(guestMode ? "/api/public-config" : "/api/config"),
+    guestMode ? Promise.resolve({ logs: [] }) : getJson("/api/push-logs")
   ]);
   state.overview = overview;
   state.defects = defects.defects;
@@ -152,8 +244,10 @@ async function loadAll() {
   applyDefectRouteParams();
   renderOwnerFilterOptions();
   renderDefects({ updateRoute: state.view === "defects", replaceRoute: true });
-  renderLogs();
-  renderConfig();
+  if (!guestMode) {
+    renderLogs();
+    renderConfig();
+  }
 }
 
 async function refreshFromZentao() {
@@ -186,7 +280,7 @@ async function getJson(url) {
 
 function getViewFromRoute() {
   const { view } = parseRoute();
-  return view && titles[view] ? view : "overview";
+  return view && titles[view] && allowedViews.includes(view) ? view : "overview";
 }
 
 function parseRoute() {
@@ -197,7 +291,7 @@ function parseRoute() {
 }
 
 function switchView(view, options = {}) {
-  if (!titles[view]) view = "overview";
+  if (!titles[view] || !allowedViews.includes(view)) view = "overview";
   state.view = view;
   document.querySelector(".main").classList.toggle("list-mode", ["defects", "logs"].includes(view));
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
@@ -295,7 +389,7 @@ function renderDefectCards(defects, urgent) {
         ${isFatal(defect) ? `<span class="pill fatal">致命</span>` : ""}
         ${renderNewPendingPill(defect)}
         ${isReactivatedByTestToFrontendDefect(defect) ? `<span class="pill reactivated">重新激活</span>` : ""}
-        ${ageLabel ? `<span class="pill age ${ageLabel === "超期" ? "overdue" : ""}">${ageLabel}</span>` : ""}
+        ${renderAgePill(defect, ageLabel)}
         <span class="pill ${urgent ? "urgent" : ""}">P${escapeHtml(defect.priority)}</span>
         <span class="pill">${escapeHtml(statusText(defect.status))}</span>
         <span class="meta-owner">负责人：${escapeHtml(defect.assignedTo || "未指派")}</span>
@@ -703,7 +797,9 @@ function renderOwnerFilterOptions() {
 }
 
 function getConfiguredOwnerOptions() {
-  return [...new Set((state.config?.rules?.assignees || []).filter(Boolean))]
+  const owners = state.config?.rules?.assignees?.length ? state.config.rules.assignees : state.assignees;
+  const fallbackOwners = owners?.length ? owners : state.defects.map((defect) => getDefectOwnerName(defect));
+  return [...new Set((fallbackOwners || []).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b, "zh-CN"));
 }
 
@@ -938,6 +1034,7 @@ function renderConfig() {
   document.getElementById("scheduleYesterdayTime").value = config.scheduler.yesterdayReportTime || "09:40";
   renderP1P2TimeInputs(config.scheduler.p1p2ReportTimes || [config.scheduler.p1p2ReportTime || "18:00"]);
   document.getElementById("userMappings").value = JSON.stringify(config.userMappings || {}, null, 2);
+  document.getElementById("adminToken").value = config.auth?.adminToken || "";
 }
 
 function renderP1P2TimeInputs(times) {
@@ -1094,7 +1191,10 @@ async function saveConfig(event) {
         p1p2: document.getElementById("scheduleP1P2Enabled").checked
       }
     },
-    userMappings
+    userMappings,
+    auth: {
+      adminToken: document.getElementById("adminToken").value
+    }
   };
   const assigneesChanged = !areAssigneeListsEqual(state.config?.rules?.assignees, config.rules.assignees);
 
@@ -1437,9 +1537,9 @@ function isVisibleOpenDefect(defect) {
 function metricFoot(label) {
   const foots = {
     今日新增: "新进入缺陷池",
-    今日解决: "已解决或已关闭",
+    今日解决: "开发已解决",
     今日关闭: "测试已关闭",
-    异常数据: "转测异常或测试重激活",
+    异常数据: "需求需确认或重激活",
     未完成总数: "当前待处理",
     "P1/P2 未完成": "高优先级风险",
     "非 P1/P2 未完成": "普通待处理",
@@ -1502,10 +1602,21 @@ function isNewPendingDefect(defect) {
 
 function renderNewPendingPill(defect) {
   if (!isNewPendingDefect(defect)) return "";
+  return `<span class="pill new" title="${escapeHtml(getPendingTimeTooltip(defect))}">新</span>`;
+}
+
+function renderAgePill(defect, ageLabel) {
+  if (!ageLabel) return "";
+  const className = `pill age ${ageLabel === "超期" ? "overdue" : ""}`.trim();
+  const title = ageLabel === "超期" ? ` title="${escapeHtml(getPendingTimeTooltip(defect))}"` : "";
+  return `<span class="${className}"${title}>${ageLabel}</span>`;
+}
+
+function getPendingTimeTooltip(defect) {
   const isTransferredIn = isRecentlyTransferredInDefect(defect);
   const label = isTransferredIn ? "转入时间" : "创建时间";
   const value = isTransferredIn ? defect.assignedAt : defect.openedDate;
-  return `<span class="pill new" title="${label}：${escapeHtml(formatTime(value))}">新</span>`;
+  return `${label}：${formatTime(value)}`;
 }
 
 function isRecentlyTransferredInDefect(defect) {

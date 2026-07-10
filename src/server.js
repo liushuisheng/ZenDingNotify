@@ -22,6 +22,7 @@ const PUSH_TYPES = {
 const ZENTAO_BUGS_PAGE_SIZE = 2000;
 const ZENTAO_DETAIL_CONCURRENCY = 16;
 const MIN_DEFECT_CACHE_TTL_MS = 60 * 1000;
+const ADMIN_COOKIE_NAME = "zend_admin";
 const FRONTEND_OWNERS = ["刘水生", "谌祖恒", "王思鑫", "李彦龙", "李思成", "马陈绵"];
 const TEST_OWNER_ALIASES = ["陈加鹏", "陈家鹏"];
 const ZENTAO_ACCOUNT_ALIASES = {
@@ -70,6 +71,9 @@ const defaultConfig = {
       yesterday: true,
       p1p2: true
     }
+  },
+  auth: {
+    adminToken: ""
   }
 };
 
@@ -132,6 +136,8 @@ await ensureFiles();
 const config = normalizeConfig(await readJson(configPath, defaultConfig));
 let store = await readJson(storePath, defaultStore());
 let fetchInFlight = null;
+const scheduledReportRunsInFlight = new Set();
+ensureAdminToken();
 store.defects = store.defects?.length ? store.defects : (config.zentao.enabled ? [] : sampleDefects);
 await saveConfig();
 await saveStore();
@@ -152,6 +158,40 @@ server.listen(port, () => {
 
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (req.method === "GET" && url.pathname === "/api/session") {
+    sendJson(res, 200, { authenticated: isAdminRequest(req) });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/login") {
+    const body = await readBodyJson(req);
+    const password = String(body.password || "");
+    if (!tokensEqual(password, config.auth?.adminToken)) {
+      sendJson(res, 401, { ok: false, error: "Unauthorized", message: "管理员密码不正确" });
+      return;
+    }
+    setAdminCookie(res, password, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/logout") {
+    res.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Set-Cookie": `${ADMIN_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
+    });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (!isPublicRequest(req, url) && !isAdminRequest(req)) {
+    sendJson(res, 401, {
+      ok: false,
+      error: "Unauthorized",
+      message: "管理后台需要先登录"
+    });
+    return;
+  }
 
   if (req.method === "GET" && url.pathname === "/api/overview") {
     sendJson(res, 200, buildOverview());
@@ -186,6 +226,11 @@ async function route(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/public-config") {
+    sendJson(res, 200, { config: getPublicConfig() });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/config") {
     sendJson(res, 200, { config });
     return;
@@ -193,10 +238,15 @@ async function route(req, res) {
 
   if (req.method === "PUT" && url.pathname === "/api/config") {
     const body = await readBodyJson(req);
-    const nextConfig = normalizeConfig(body.config || body);
+    const rawConfig = body.config || body;
+    const nextConfig = normalizeConfig(rawConfig);
+    if (!Object.prototype.hasOwnProperty.call(rawConfig, "auth")) {
+      nextConfig.auth.adminToken = config.auth?.adminToken || nextConfig.auth.adminToken;
+    }
     replaceConfig(nextConfig);
+    ensureAdminToken();
     await saveConfig();
-    sendJson(res, 200, { ok: true, config });
+    setAdminCookie(res, config.auth.adminToken, 200, { ok: true, config });
     return;
   }
 
@@ -251,7 +301,7 @@ async function route(req, res) {
   }
 
   if (req.method === "GET") {
-    await serveStatic(url.pathname === "/" ? "/index.html" : url.pathname, res);
+    await serveStatic(url.pathname === "/" ? "/index.html" : url.pathname, req, res);
     return;
   }
 
@@ -844,6 +894,17 @@ function parseBugDetail(html, defect) {
   const statusMatch = text.match(/Bug状态\s+(激活|已解决|已关闭|变更中|active|resolved|closed|changing)/i);
   if (statusMatch) detail.status = normalizeZentaoStatus(statusMatch[1]);
 
+  const openedMatch = text.match(/由谁创建\s+([^\s]+?)\s+于\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/)
+    || text.match(/创建者\s+([^\s]+?)\s+于\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/)
+    || text.match(/创建时间\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/)
+    || text.match(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}),\s+由\s+([^。]+?)\s+创建。/);
+  if (openedMatch) {
+    const firstGroupIsDate = /^\d{4}-\d{2}-\d{2}/.test(openedMatch[1]);
+    const openedBy = firstGroupIsDate ? openedMatch[2] : openedMatch[1];
+    if (openedBy) detail.openedBy = openedBy.trim();
+    detail.openedDate = normalizeZentaoDateTime(firstGroupIsDate ? openedMatch[1] : openedMatch[2]);
+  }
+
   const currentAssignedMatch = text.match(/当前指派\s+(.+?)\s+于\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/);
   if (currentAssignedMatch) {
     const assignedTo = currentAssignedMatch[1].trim();
@@ -1005,7 +1066,7 @@ function parseBugRow(row) {
     severity: severityMatch ? decodeHtml(stripTags(severityMatch[1]).trim()) : "",
     assignedTo: assignedCell ? decodeHtml(stripTags(assignedCell).trim()) : "",
     openedBy: openedByCell ? decodeHtml(stripTags(openedByCell).trim()) : "",
-    openedDate: openedDateCell ? normalizeZentaoDate(decodeHtml(stripTags(openedDateCell).trim())) : "",
+    openedDate: openedDateCell ? normalizeZentaoDateTime(decodeHtml(stripTags(openedDateCell).trim())) : "",
     resolvedDate: "",
     closedDate: "",
     url: `${trimSlash(config.zentao.baseUrl)}/bug-view-${id}.html`
@@ -1305,12 +1366,29 @@ function scheduleJobs() {
     const ruleConfig = getSchedulerRuleConfig();
 
     if (ruleConfig.yesterday && hhmm === config.scheduler.yesterdayReportTime && store.lastScheduledRun.yesterday !== dateKey) {
-      store.lastScheduledRun.yesterday = dateKey;
-      runYesterdayReport("schedule").catch((error) => recordJobError("YESTERDAY_DAILY_REPORT", error));
+      const runKey = `yesterday:${dateKey}:${hhmm}`;
+      if (!scheduledReportRunsInFlight.has(runKey)) {
+        scheduledReportRunsInFlight.add(runKey);
+        runYesterdayReport("schedule")
+          .then(() => {
+            store.lastScheduledRun.yesterday = dateKey;
+            return saveStore();
+          })
+          .catch((error) => recordJobError("YESTERDAY_DAILY_REPORT", error))
+          .finally(() => scheduledReportRunsInFlight.delete(runKey));
+      }
     }
     if (ruleConfig.p1p2 && getP1P2ReportTimes().includes(hhmm) && !hasScheduledTimeRun("p1p2", dateKey, hhmm)) {
-      markScheduledTimeRun("p1p2", dateKey, hhmm);
-      runP1P2Report("schedule").catch((error) => recordJobError("TODAY_P1P2_RISK_REPORT", error));
+      const runKey = `p1p2:${dateKey}:${hhmm}`;
+      if (scheduledReportRunsInFlight.has(runKey)) return;
+      scheduledReportRunsInFlight.add(runKey);
+      runP1P2Report("schedule")
+        .then(() => {
+          markScheduledTimeRun("p1p2", dateKey, hhmm);
+          return saveStore();
+        })
+        .catch((error) => recordJobError("TODAY_P1P2_RISK_REPORT", error))
+        .finally(() => scheduledReportRunsInFlight.delete(runKey));
     }
   }, 30 * 1000);
 }
@@ -1357,7 +1435,15 @@ async function recordJobError(type, error) {
   await saveStore();
 }
 
-async function serveStatic(requestPath, res) {
+async function serveStatic(requestPath, req, res) {
+  if (requestPath === "/guest" || requestPath === "/guest/") {
+    await serveGuestIndex(res);
+    return;
+  }
+  if (requestPath === "/index.html" && !isAdminRequest(req)) {
+    await serveLoginIndex(res);
+    return;
+  }
   const safePath = path.normalize(decodeURIComponent(requestPath)).replace(/^(\.\.[/\\])+/, "");
   const filePath = path.join(publicDir, safePath);
   if (!filePath.startsWith(publicDir)) {
@@ -1373,9 +1459,86 @@ async function serveStatic(requestPath, res) {
   }
 }
 
+async function serveLoginIndex(res) {
+  try {
+    const indexPath = path.join(publicDir, "index.html");
+    const content = await fs.readFile(indexPath, "utf8");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(content.replace("<body>", '<body class="login-mode">'));
+  } catch {
+    sendJson(res, 404, { ok: false, error: "Not found" });
+  }
+}
+
+async function serveGuestIndex(res) {
+  try {
+    const indexPath = path.join(publicDir, "index.html");
+    const content = await fs.readFile(indexPath, "utf8");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(content.replace("<body>", '<body class="guest-mode">'));
+  } catch {
+    sendJson(res, 404, { ok: false, error: "Not found" });
+  }
+}
+
 function sendJson(res, status, data) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data));
+}
+
+function getPublicConfig() {
+  return {
+    rules: {
+      assignees: [...(config.rules?.assignees || [])]
+    }
+  };
+}
+
+function ensureAdminToken() {
+  config.auth = {
+    ...config.auth,
+    adminToken: String(config.auth?.adminToken || "").trim()
+  };
+  if (!config.auth.adminToken) {
+    config.auth.adminToken = crypto.randomBytes(18).toString("hex");
+  }
+}
+
+function setAdminCookie(res, token, status, data, extraHeaders = {}) {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Set-Cookie": `${ADMIN_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/`,
+    ...extraHeaders
+  });
+  res.end(data ? JSON.stringify(data) : "");
+}
+
+function isAdminRequest(req) {
+  const token = getRequestCookie(req, ADMIN_COOKIE_NAME) || req.headers["x-admin-token"];
+  return tokensEqual(token, config.auth?.adminToken);
+}
+
+function isPublicRequest(req, url) {
+  if (req.method !== "GET") return false;
+  if (url.pathname === "/" || url.pathname === "/index.html") return true;
+  if (url.pathname === "/guest" || url.pathname === "/guest/") return true;
+  if (["/api/overview", "/api/defects", "/api/public-config", "/api/config-status", "/api/session"].includes(url.pathname)) return true;
+  return ["/app.js", "/styles.css"].includes(url.pathname);
+}
+
+function getRequestCookie(req, name) {
+  const cookies = String(req.headers.cookie || "").split(";");
+  for (const cookie of cookies) {
+    const [key, ...rest] = cookie.split("=");
+    if (key?.trim() === name) return decodeURIComponent(rest.join("=").trim());
+  }
+  return "";
+}
+
+function tokensEqual(a, b) {
+  const left = Buffer.from(String(a || ""));
+  const right = Buffer.from(String(b || ""));
+  return left.length === right.length && left.length > 0 && crypto.timingSafeEqual(left, right);
 }
 
 async function readBodyJson(req) {
@@ -1426,6 +1589,9 @@ function normalizeConfig(value) {
         yesterday: value.scheduler?.rules?.yesterday !== false,
         p1p2: value.scheduler?.rules?.p1p2 !== false
       }
+    },
+    auth: {
+      adminToken: String(value.auth?.adminToken || "").trim()
     }
   };
 }

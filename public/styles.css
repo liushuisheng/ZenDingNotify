@@ -54,6 +54,84 @@ button {
   display: none !important;
 }
 
+body.guest-mode .nav-item:not([data-view="overview"]):not([data-view="defects"]),
+body.guest-mode #refreshBtn {
+  display: none;
+}
+
+body.login-mode {
+  display: block;
+}
+
+body.login-mode .sidebar,
+body.login-mode .main {
+  display: none;
+}
+
+.login-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    linear-gradient(180deg, rgba(232, 240, 255, 0.82), transparent 360px),
+    var(--bg);
+}
+
+.login-panel {
+  width: min(380px, 100%);
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow);
+}
+
+.login-brand {
+  margin-bottom: 4px;
+}
+
+.login-brand strong {
+  color: var(--text);
+}
+
+.login-brand span {
+  color: var(--muted);
+}
+
+.logout-button {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  margin-left: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: #dbe4ef;
+  background: transparent;
+  cursor: pointer;
+}
+
+.logout-button:hover {
+  color: #fff;
+  border-color: rgba(248, 113, 113, 0.34);
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.logout-button svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .sidebar {
   height: 100vh;
   min-height: 100%;
@@ -70,6 +148,11 @@ button {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.brand > div:nth-child(2) {
+  min-width: 0;
+  flex: 1;
 }
 
 .brand-mark {
@@ -139,6 +222,11 @@ nav {
   background: rgba(255, 255, 255, 0.06);
 }
 
+#configStatus {
+  display: grid;
+  gap: 10px;
+}
+
 .status-row {
   display: flex;
   justify-content: space-between;
@@ -148,6 +236,22 @@ nav {
 }
 
 .status-row strong {
+  color: #fff;
+  font-size: 12px;
+}
+
+.role-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.role-row strong {
   color: #fff;
   font-size: 12px;
 }

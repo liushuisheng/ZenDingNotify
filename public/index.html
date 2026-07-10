@@ -7,6 +7,24 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
+    <section class="login-screen hidden" id="loginScreen">
+      <form class="login-panel" id="loginForm">
+        <div class="brand login-brand">
+          <div class="brand-mark">ZD</div>
+          <div>
+            <strong>ZenDing Notify</strong>
+            <span>管理后台登录</span>
+          </div>
+        </div>
+        <label class="field">
+          <span>管理员密码</span>
+          <input id="adminPassword" type="password" autocomplete="current-password" autofocus>
+        </label>
+        <button type="submit" class="primary">登录</button>
+        <div id="loginError" class="form-feedback hidden" role="alert"></div>
+      </form>
+    </section>
+
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">ZD</div>
@@ -22,7 +40,20 @@
         <button class="nav-item" data-view="actions"><span>手动推送</span></button>
         <button class="nav-item" data-view="settings"><span>配置</span></button>
       </nav>
-      <div class="status-box" id="configStatus"></div>
+      <div class="status-box">
+        <div id="configStatus"></div>
+        <div class="role-row">
+          <span>当前角色</span>
+          <strong id="currentRoleText">访客登录</strong>
+          <button type="button" class="logout-button hidden" id="logoutBtn" title="退出登录" aria-label="退出登录">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M10 17l5-5-5-5" />
+              <path d="M15 12H3" />
+              <path d="M21 3v18" />
+            </svg>
+          </button>
+        </div>
+      </div>
     </aside>
 
     <main class="main">
@@ -297,6 +328,21 @@
                 <span>映射 JSON</span>
                 <textarea id="userMappings" rows="10" spellcheck="false"></textarea>
               </label>
+            </section>
+
+            <section class="panel form-panel">
+              <div class="panel-head">
+                <div>
+                  <h2>后台访问</h2>
+                  <p>用于进入管理后台；访客地址不需要密码</p>
+                </div>
+              </div>
+              <div class="form-grid">
+                <label class="field">
+                  <span>管理员密码</span>
+                  <input id="adminToken" type="password" autocomplete="new-password">
+                </label>
+              </div>
             </section>
           </div>
 
