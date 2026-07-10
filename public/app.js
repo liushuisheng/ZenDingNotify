@@ -391,7 +391,6 @@ function renderDefectCards(defects, urgent) {
         ${isReactivatedByTestToFrontendDefect(defect) ? `<span class="pill reactivated">重新激活</span>` : ""}
         ${renderAgePill(defect, ageLabel)}
         <span class="pill ${urgent ? "urgent" : ""}">P${escapeHtml(defect.priority)}</span>
-        <span class="pill">${escapeHtml(statusText(defect.status))}</span>
         <span class="meta-owner">负责人：${escapeHtml(defect.assignedTo || "未指派")}</span>
       </div>
     </article>
@@ -540,6 +539,7 @@ function shouldShowResolverColumn(defects, mode) {
 }
 
 function getResolverName(defect) {
+  if (isLastTransferFromConfiguredOwnerToTest(defect)) return defect.assignedFrom;
   if (defect.resolvedBy && !isTestOwner(defect.resolvedBy)) return defect.resolvedBy;
   if (defect.assignedFrom && !isTestOwner(defect.assignedFrom)) return defect.assignedFrom;
   return defect.resolvedBy || "-";
@@ -582,7 +582,8 @@ function getOwnerTransferNote(defect, mode) {
 }
 
 function getFrontendDeveloperName(defect) {
-  if (isFrontendOwner(defect.resolvedBy)) return defect.resolvedBy;
+  const resolver = getResolverName(defect);
+  if (isFrontendOwner(resolver)) return resolver;
   if (isFrontendOwner(defect.assignedFrom)) return defect.assignedFrom;
   return "";
 }
@@ -595,8 +596,13 @@ function matchesOwnerFilters(defect, mode) {
 function getOwnerMatchFields(defect, mode) {
   if (mode === "ownerTodayAdded") return [getInitialAssignedTo(defect)];
   if (["ownerOpen", "ownerUrgent", "ownerNormal", "ownerTodayReturned"].includes(mode)) return [defect.assignedTo];
-  if (["ownerPendingTest", "ownerTodayTransferred", "ownerTodayResolved"].includes(mode)) return [defect.assignedFrom];
+  if (["ownerPendingTest", "ownerTodayTransferred"].includes(mode)) return [defect.assignedFrom];
+  if (mode === "ownerTodayResolved") return getDeveloperOwnerFields(defect);
   return [getDefectOwnerName(defect)];
+}
+
+function getDeveloperOwnerFields(defect) {
+  return [getResolverName(defect), defect.assignedFrom].filter(Boolean);
 }
 
 function isConfiguredPersonDefect(defect, mode) {
@@ -1718,8 +1724,19 @@ function isReactivatedByTestToFrontendDefect(defect) {
 
 function isFrontendResolvedDefect(defect) {
   return ["resolved", "closed"].includes(normalizeStatus(defect.status))
-    && isConfiguredDeveloperRelatedDefect(defect)
-    && isTestOwner(defect.assignedTo);
+    && isResolvedByConfiguredOwnerToTest(defect);
+}
+
+function isResolvedByConfiguredOwnerToTest(defect) {
+  return isTransferredToTest(defect) && [defect.assignedFrom, defect.resolvedBy].some(isFrontendOwner);
+}
+
+function isTransferredToTest(defect) {
+  return isTestOwner(defect.assignedTo) || isTestOwner(defect.closedBy);
+}
+
+function isLastTransferFromConfiguredOwnerToTest(defect) {
+  return isTransferredToTest(defect) && isFrontendOwner(defect.assignedFrom);
 }
 
 function isResolvedPendingVerifyDefect(defect) {

@@ -974,6 +974,17 @@ function parseBugDetail(html, defect) {
     if (closedDateMatch) detail.closedDate = normalizeZentaoDateTime(closedDateMatch[1]);
   }
 
+  if (
+    detail.assignedFrom
+    && isFrontendOwner(detail.assignedFrom)
+    && isTestOwner(detail.assignedTo || defect.assignedTo)
+    && ["resolved", "closed"].includes(normalizeZentaoStatus(detail.status || defect.status))
+  ) {
+    detail.resolvedBy = detail.assignedFrom;
+    detail.resolvedDate = detail.assignedAt || detail.resolvedDate;
+    detail.assignedStatusAfter = detail.assignedStatusAfter || "resolved";
+  }
+
   if (!detail.assignedFrom && detail.resolvedBy && isFrontendOwner(detail.resolvedBy) && isTestOwner(detail.assignedTo || defect.assignedTo)) {
     detail.assignedFrom = detail.resolvedBy;
     detail.assignedAt = detail.resolvedDate || detail.assignedAt || "";
@@ -1154,7 +1165,7 @@ function groupByOwner(defects, open, todayAdded, todayPendingTest) {
   const names = new Set(configuredOwners.length ? configuredOwners : [
     ...open.map((defect) => defect.assignedTo || "unassigned"),
     ...todayAdded.map((defect) => defect.assignedTo || "unassigned"),
-    ...todayPendingTest.map((defect) => defect.assignedFrom || "unassigned"),
+    ...todayPendingTest.flatMap(getDeveloperOwnerFields),
     ...pendingTest.map((defect) => defect.assignedFrom || "unassigned")
   ]);
   return [...names].map((account) => {
@@ -1171,9 +1182,13 @@ function groupByOwner(defects, open, todayAdded, todayPendingTest) {
       todayAdded: todayAdded.filter((defect) => namesEqual(getInitialAssignedTo(defect) || "unassigned", account)).length,
       todayTransferred: todayTransferred.filter((defect) => namesEqual(defect.assignedFrom, account)).length,
       todayReturned: todayReturned.filter((defect) => namesEqual(defect.assignedTo, account)).length,
-      todayResolved: todayPendingTest.filter((defect) => namesEqual(defect.assignedFrom, account)).length
+      todayResolved: todayPendingTest.filter((defect) => getDeveloperOwnerFields(defect).some((owner) => namesEqual(owner, account))).length
     };
   }).sort((a, b) => (b.openTotal - a.openTotal) || (b.urgentOpen - a.urgentOpen) || (b.pendingTest - a.pendingTest) || (b.normalOpen - a.normalOpen));
+}
+
+function getDeveloperOwnerFields(defect) {
+  return [getResolverName(defect), defect.assignedFrom].filter(Boolean);
 }
 
 function isConfiguredPersonDefect(defect) {
@@ -1197,12 +1212,14 @@ function getDefectOwnerName(defect) {
 }
 
 function getFrontendDeveloperName(defect) {
-  if (isFrontendOwner(defect.resolvedBy)) return defect.resolvedBy;
+  const resolver = getResolverName(defect);
+  if (isFrontendOwner(resolver)) return resolver;
   if (isFrontendOwner(defect.assignedFrom)) return defect.assignedFrom;
   return "";
 }
 
 function getResolverName(defect) {
+  if (isLastTransferFromConfiguredOwnerToTest(defect)) return defect.assignedFrom;
   return defect.resolvedBy || defect.assignedFrom || "";
 }
 
@@ -1313,8 +1330,19 @@ function isReactivatedByTestToFrontendDefect(defect) {
 
 function isFrontendResolvedDefect(defect) {
   return ["resolved", "closed"].includes(normalizeZentaoStatus(defect.status))
-    && isConfiguredDeveloperRelatedDefect(defect)
-    && isTestOwner(defect.assignedTo);
+    && isResolvedByConfiguredOwnerToTest(defect);
+}
+
+function isResolvedByConfiguredOwnerToTest(defect) {
+  return isTransferredToTest(defect) && [defect.assignedFrom, defect.resolvedBy].some(isFrontendOwner);
+}
+
+function isTransferredToTest(defect) {
+  return isTestOwner(defect.assignedTo) || isTestOwner(defect.closedBy);
+}
+
+function isLastTransferFromConfiguredOwnerToTest(defect) {
+  return isTransferredToTest(defect) && isFrontendOwner(defect.assignedFrom);
 }
 
 function isResolvedPendingVerifyDefect(defect) {
