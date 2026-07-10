@@ -612,7 +612,7 @@ function buildOverview() {
   const todayResolved = defects.filter((defect) => isFrontendResolvedDefect(defect) && isInRange(getDeveloperResolvedAt(defect), today));
   const todayClosed = defects.filter((defect) => isFrontendClosedDefect(defect) && isInRange(defect.closedDate, today));
   const resolvedPendingVerify = defects.filter(isResolvedPendingVerifyDefect);
-  const owners = groupByOwner(open, todayAdded, todayResolved);
+  const owners = groupByOwner(defects, open, todayAdded, todayResolved);
 
   return {
     stats: {
@@ -775,7 +775,7 @@ function getFilteredDefects(options = {}) {
 function isDefectOwnedByConfiguredAssignee(defect, assignees) {
   const status = normalizeZentaoStatus(defect.status);
   if (["resolved", "closed"].includes(status)) {
-    return [defect.resolvedBy, defect.assignedFrom].some((value) => assignees.includes(normalizeAssigneeName(value)));
+    return [defect.resolvedBy, defect.assignedFrom, getInitialAssignedTo(defect)].some((value) => assignees.includes(normalizeAssigneeName(value)));
   }
   if (isTestOwner(defect.assignedTo)) {
     return assignees.includes(normalizeAssigneeName(defect.assignedFrom));
@@ -1146,10 +1146,10 @@ function isLikelyAssignee(value) {
   return !["closed", "resolved", "active", "关闭", "已关闭", "解决", "已解决", "激活"].includes(text.toLowerCase());
 }
 
-function groupByOwner(open, todayAdded, todayPendingTest) {
-  const pendingTest = store.defects.filter(isResolvedPendingVerifyDefect);
-  const todayTransferred = store.defects.filter(isTodayTransferredDefect);
-  const todayReturned = store.defects.filter(isTodayReturnedDefect);
+function groupByOwner(defects, open, todayAdded, todayPendingTest) {
+  const pendingTest = defects.filter(isResolvedPendingVerifyDefect);
+  const todayTransferred = defects.filter(isTodayTransferredDefect);
+  const todayReturned = defects.filter(isTodayReturnedDefect);
   const configuredOwners = (config.rules.assignees || []).filter((owner) => owner && !isTestOwner(owner));
   const names = new Set(configuredOwners.length ? configuredOwners : [
     ...open.map((defect) => defect.assignedTo || "unassigned"),
@@ -1313,19 +1313,23 @@ function isReactivatedByTestToFrontendDefect(defect) {
 
 function isFrontendResolvedDefect(defect) {
   return ["resolved", "closed"].includes(normalizeZentaoStatus(defect.status))
-    && (isFrontendOwner(defect.assignedFrom) || isFrontendOwner(defect.resolvedBy))
+    && isConfiguredDeveloperRelatedDefect(defect)
     && isTestOwner(defect.assignedTo);
 }
 
 function isResolvedPendingVerifyDefect(defect) {
   return normalizeZentaoStatus(defect.status) === "resolved"
     && isTestOwner(defect.assignedTo)
-    && (isFrontendOwner(defect.assignedFrom) || isFrontendOwner(defect.resolvedBy));
+    && isConfiguredDeveloperRelatedDefect(defect);
 }
 
 function isFrontendClosedDefect(defect) {
   return normalizeZentaoStatus(defect.status) === "closed"
-    && (isFrontendOwner(defect.assignedFrom) || isFrontendOwner(defect.resolvedBy));
+    && isConfiguredDeveloperRelatedDefect(defect);
+}
+
+function isConfiguredDeveloperRelatedDefect(defect) {
+  return [defect.assignedFrom, defect.resolvedBy, getInitialAssignedTo(defect)].some(isFrontendOwner);
 }
 
 function getDeveloperResolvedAt(defect) {
@@ -1333,7 +1337,8 @@ function getDeveloperResolvedAt(defect) {
 }
 
 function isFrontendOwner(value) {
-  return FRONTEND_OWNERS.some((owner) => namesEqual(value, owner));
+  const configured = getConfiguredAssigneeNames().filter((owner) => !isTestOwner(owner));
+  return configured.includes(normalizeAssigneeName(value));
 }
 
 function isTestOwner(value) {
@@ -1523,7 +1528,7 @@ function isPublicRequest(req, url) {
   if (url.pathname === "/" || url.pathname === "/index.html") return true;
   if (url.pathname === "/guest" || url.pathname === "/guest/") return true;
   if (["/api/overview", "/api/defects", "/api/public-config", "/api/config-status", "/api/session"].includes(url.pathname)) return true;
-  return ["/app.js", "/styles.css"].includes(url.pathname);
+  return ["/app.js", "/styles.css", "/favicon.svg"].includes(url.pathname);
 }
 
 function getRequestCookie(req, name) {
@@ -1744,6 +1749,7 @@ function contentType(filePath) {
   if (filePath.endsWith(".css")) return "text/css; charset=utf-8";
   if (filePath.endsWith(".js")) return "application/javascript; charset=utf-8";
   if (filePath.endsWith(".html")) return "text/html; charset=utf-8";
+  if (filePath.endsWith(".svg")) return "image/svg+xml; charset=utf-8";
   return "application/octet-stream";
 }
 

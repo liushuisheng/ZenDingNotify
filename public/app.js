@@ -616,7 +616,7 @@ function isConfiguredPersonDefect(defect, mode) {
     return configured.some((assignee) => namesMatch(getInitialAssignedTo(defect), assignee));
   }
   if (["resolved", "closed"].includes(normalizeStatus(defect.status))) {
-    return configured.some((assignee) => [defect.resolvedBy, defect.assignedFrom].some((value) => namesMatch(value, assignee)));
+    return configured.some((assignee) => [defect.resolvedBy, defect.assignedFrom, getInitialAssignedTo(defect)].some((value) => namesMatch(value, assignee)));
   }
   if (isTestOwner(defect.assignedTo)) {
     return configured.some((assignee) => namesMatch(defect.assignedFrom, assignee));
@@ -1718,19 +1718,23 @@ function isReactivatedByTestToFrontendDefect(defect) {
 
 function isFrontendResolvedDefect(defect) {
   return ["resolved", "closed"].includes(normalizeStatus(defect.status))
-    && (isFrontendOwner(defect.assignedFrom) || isFrontendOwner(defect.resolvedBy))
+    && isConfiguredDeveloperRelatedDefect(defect)
     && isTestOwner(defect.assignedTo);
 }
 
 function isResolvedPendingVerifyDefect(defect) {
   return normalizeStatus(defect.status) === "resolved"
     && isTestOwner(defect.assignedTo)
-    && (isFrontendOwner(defect.assignedFrom) || isFrontendOwner(defect.resolvedBy));
+    && isConfiguredDeveloperRelatedDefect(defect);
 }
 
 function isFrontendClosedDefect(defect) {
   return normalizeStatus(defect.status) === "closed"
-    && (isFrontendOwner(defect.assignedFrom) || isFrontendOwner(defect.resolvedBy));
+    && isConfiguredDeveloperRelatedDefect(defect);
+}
+
+function isConfiguredDeveloperRelatedDefect(defect) {
+  return [defect.assignedFrom, defect.resolvedBy, getInitialAssignedTo(defect)].some(isFrontendOwner);
 }
 
 function getDeveloperResolvedAt(defect) {
@@ -1738,8 +1742,8 @@ function getDeveloperResolvedAt(defect) {
 }
 
 function isFrontendOwner(value) {
-  const frontend = roleGroups.find((role) => role.id === "frontend");
-  return frontend?.members.some((aliases) => aliases.some((alias) => namesMatch(value, alias))) || false;
+  const configured = (state.config?.rules?.assignees || []).filter((owner) => !isTestOwner(owner));
+  return configured.some((owner) => namesMatch(value, owner));
 }
 
 function isTestOwner(value) {
