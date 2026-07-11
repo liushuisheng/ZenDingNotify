@@ -27,13 +27,24 @@ const FRONTEND_OWNERS = ["刘水生", "谌祖恒", "王思鑫", "李彦龙", "�
 const TEST_OWNER_ALIASES = ["陈加鹏", "陈家鹏"];
 const ZENTAO_ACCOUNT_ALIASES = {
   liuss: "刘水生",
+  liushuisheng: "刘水生",
   lisicheng: "李思成",
   wangsixin: "王思鑫",
   liyanlong: "李彦龙",
   machm: "马陈绵",
   machenmian: "马陈绵",
   tanzuheng: "谌祖恒",
-  chenzuheng: "谌祖恒"
+  chenzuheng: "谌祖恒",
+  chenjiapeng: "陈加鹏",
+  chenjp: "陈加鹏",
+  panwenhao: "潘文豪",
+  pwh: "潘文豪",
+  chenyunhui: "陈运辉",
+  chenyh: "陈运辉",
+  lishichao: "李世超",
+  lisc: "李世超",
+  pengqiuchun: "彭求春",
+  pengqc: "彭求春"
 };
 
 const defaultConfig = {
@@ -194,12 +205,12 @@ async function route(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/overview") {
-    sendJson(res, 200, buildOverview());
+    sendJson(res, 200, buildOverview({ owner: getOwnerScopeFromUrl(url) }));
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/defects") {
-    sendJson(res, 200, { defects: getFilteredDefects({ includeStatuses: false }) });
+    sendJson(res, 200, { defects: getFilteredDefects({ includeStatuses: false, owner: getOwnerScopeFromUrl(url) }) });
     return;
   }
 
@@ -221,7 +232,8 @@ async function route(req, res) {
       schedulerEnabled: config.scheduler?.enabled !== false,
       schedulerRules: getSchedulerRuleConfig(),
       mappedUsers: Object.keys(config.userMappings || {}).length,
-      lastFetchAt: getLastSuccessfulFetchAt()
+      lastFetchAt: getLastSuccessfulFetchAt(),
+      fetching: Boolean(fetchInFlight)
     });
     return;
   }
@@ -318,6 +330,10 @@ async function fetchAndStoreDefects(trigger) {
 
 async function doFetchAndStoreDefects(trigger) {
   const startedAt = new Date().toISOString();
+  const previousAssignees = getStoredSyncAssignees();
+  const currentAssignees = getConfiguredAssigneeNames();
+  const addedAssignees = currentAssignees.filter((assignee) => !previousAssignees.includes(assignee));
+  const syncMode = getFetchSyncMode(currentAssignees, addedAssignees);
   let defects;
   let source = "sample";
 
@@ -329,26 +345,67 @@ async function doFetchAndStoreDefects(trigger) {
   }
 
   const normalizedDefects = prefilterDefectsBeforeDetails(normalizeDefects(defects));
-  const enrichedDefects = await enrichZentaoDefectsWithDetails(normalizedDefects);
-  store.defects = filterClosedDefectsAfterDetails(filterConfiguredDefectsAfterDetails(enrichedDefects));
+  const enrichment = await enrichZentaoDefectsWithDetails(normalizedDefects, syncMode);
+  const mergedDefects = mergeDefectSnapshots(store.defects, enrichment.defects);
+  store.defects = filterClosedDefectsAfterDetails(filterConfiguredDefectsAfterDetails(mergedDefects));
+  const finishedAt = new Date().toISOString();
+  updateFetchSyncState(currentAssignees, finishedAt);
   store.jobRuns.push({
     id: randomId(),
     type: "FETCH_DEFECTS",
     trigger,
     source,
     startedAt,
-    finishedAt: new Date().toISOString(),
+    finishedAt,
     count: store.defects.length,
+    listCount: normalizedDefects.length,
+    detailCount: enrichment.detailCount,
+    syncMode: syncMode.mode,
+    addedAssignees,
     durationMs: Date.now() - new Date(startedAt).getTime(),
     ok: true
   });
   await saveStore();
 
-  return { ok: true, source, count: store.defects.length };
+  return { ok: true, source, count: store.defects.length, detailCount: enrichment.detailCount, syncMode: syncMode.mode };
 }
 
 function getLastSuccessfulFetchAt() {
   return [...(store.jobRuns || [])].reverse().find((job) => job.type === "FETCH_DEFECTS" && job.ok)?.finishedAt || "";
+}
+
+function getFetchSyncMode(currentAssignees, addedAssignees) {
+  const lastFetchAt = getLastSuccessfulFetchAt();
+  const hasWatermarks = Boolean(store.fetchSync?.assigneeWatermarks);
+  if (!currentAssignees.length || !lastFetchAt || !hasWatermarks) {
+    return { mode: "full", lastFetchAt: "", addedAssignees: currentAssignees };
+  }
+  if (addedAssignees.length) {
+    return { mode: "mixed", lastFetchAt, addedAssignees };
+  }
+  return { mode: "incremental", lastFetchAt, addedAssignees: [] };
+}
+
+function getStoredSyncAssignees() {
+  const fromState = store.fetchSync?.assignees || [];
+  if (fromState.length) return fromState.map(normalizeAssigneeName).filter(Boolean);
+  return Object.keys(store.fetchSync?.assigneeWatermarks || {}).map(normalizeAssigneeName).filter(Boolean);
+}
+
+function updateFetchSyncState(assignees, finishedAt) {
+  const normalizedAssignees = assignees.map(normalizeAssigneeName).filter(Boolean);
+  const previous = store.fetchSync?.assigneeWatermarks || {};
+  const assigneeWatermarks = {};
+  normalizedAssignees.forEach((assignee) => {
+    assigneeWatermarks[assignee] = finishedAt;
+  });
+  store.fetchSync = {
+    ...(store.fetchSync || {}),
+    assignees: normalizedAssignees,
+    assigneeWatermarks,
+    previousAssigneeWatermarks: previous,
+    lastFetchAt: finishedAt
+  };
 }
 
 async function runRuleNotify(trigger) {
@@ -600,8 +657,8 @@ function getDingTalkWebhook() {
   return "";
 }
 
-function buildOverview() {
-  const defects = getFilteredDefects({ includeStatuses: false });
+function buildOverview(options = {}) {
+  const defects = getFilteredDefects({ includeStatuses: false, owner: options.owner });
   const today = getTodayRange();
   const open = defects.filter(isOpenDefect);
   const abnormalOpen = open.filter(isAbnormalTransferredDefect);
@@ -612,7 +669,9 @@ function buildOverview() {
   const todayResolved = defects.filter((defect) => isFrontendResolvedDefect(defect) && isInRange(getDeveloperResolvedAt(defect), today));
   const todayClosed = defects.filter((defect) => isFrontendClosedDefect(defect) && isInRange(defect.closedDate, today));
   const resolvedPendingVerify = defects.filter(isResolvedPendingVerifyDefect);
-  const owners = groupByOwner(defects, open, todayAdded, todayResolved);
+  const ownerScope = normalizeAssigneeName(options.owner);
+  const owners = groupByOwner(defects, open, todayAdded, todayResolved)
+    .filter((owner) => !ownerScope || namesEqual(owner.account, ownerScope) || namesEqual(owner.name, ownerScope));
 
   return {
     stats: {
@@ -762,14 +821,48 @@ function getFilteredDefects(options = {}) {
   const statuses = new Set((config.rules.statuses || []).map(normalizeZentaoStatus));
   const priorities = new Set((config.rules.priorities || []).map(String));
   const assignees = (config.rules.assignees || []).map(normalizeAssigneeName).filter(Boolean);
+  const owner = normalizeAssigneeName(options.owner);
   return store.defects.filter((defect) => {
     const status = normalizeZentaoStatus(defect.status);
     if (status === "active" && isTestOwner(defect.assignedTo) && !isAbnormalTransferredDefect(defect)) return false;
     const statusMatched = options.includeStatuses === false || !statuses.size || statuses.has(status);
     const priorityMatched = !priorities.size || priorities.has(String(defect.priority));
     const assigneeMatched = !assignees.length || isDefectOwnedByConfiguredAssignee(defect, assignees);
-    return statusMatched && priorityMatched && assigneeMatched;
+    const ownerMatched = !owner || isDefectOwnedByOwner(defect, owner);
+    return statusMatched && priorityMatched && assigneeMatched && ownerMatched;
   });
+}
+
+function getOwnerScopeFromUrl(url) {
+  return resolveConfiguredOwnerScope(url.searchParams.get("owner") || "");
+}
+
+function resolveConfiguredOwnerScope(value) {
+  const normalized = normalizeAssigneeName(value);
+  if (!normalized) return "";
+  const configured = getConfiguredAssigneeNames();
+  return configured.find((assignee) => namesEqual(assignee, normalized)) || normalized;
+}
+
+function isDefectOwnedByOwner(defect, owner) {
+  return getOwnerScopeFields(defect).some((value) => namesEqual(value, owner));
+}
+
+function getOwnerScopeFields(defect) {
+  const status = normalizeZentaoStatus(defect.status);
+  if (["resolved", "closed"].includes(status)) {
+    return [defect.resolvedBy, defect.assignedFrom, getInitialAssignedTo(defect), defect.assignedTo, defect.closedBy];
+  }
+  if (isTestOwner(defect.assignedTo)) {
+    return [defect.assignedFrom, getInitialAssignedTo(defect)];
+  }
+  if (isTodayTransferredDefect(defect)) {
+    return [defect.assignedFrom, defect.assignedTo];
+  }
+  if (isTodayInitiallyAssignedDefect(defect)) {
+    return [getInitialAssignedTo(defect), defect.assignedTo];
+  }
+  return [defect.assignedTo];
 }
 
 function isDefectOwnedByConfiguredAssignee(defect, assignees) {
@@ -809,6 +902,7 @@ function normalizeDefects(defects) {
     assignedFrom: bug.assignedFrom || "",
     assignedAt: bug.assignedAt || "",
     assignedStatusAfter: bug.assignedStatusAfter || "",
+    lastEditedDate: bug.lastEditedDate || bug.lastEditedAt || bug.editedDate || bug.updatedDate || "",
     url: bug.url || (bug.id && config.zentao.baseUrl ? `${trimSlash(config.zentao.baseUrl)}/bug-view-${bug.id}.html` : "")
   }));
 }
@@ -848,9 +942,10 @@ function getConfiguredAssigneeNames() {
   return (config.rules.assignees || []).map(normalizeAssigneeName).filter(Boolean);
 }
 
-async function enrichZentaoDefectsWithDetails(defects) {
-  if (!config.zentao.enabled || !config.zentao.cookie) return defects;
-  const candidates = defects.filter(shouldFetchZentaoDetail);
+async function enrichZentaoDefectsWithDetails(defects, syncMode = { mode: "full" }) {
+  if (!config.zentao.enabled || !config.zentao.cookie) return { defects, detailCount: 0 };
+  const previousById = new Map((store.defects || []).map((defect) => [String(defect.id), defect]));
+  const candidates = defects.filter((defect) => shouldFetchZentaoDetailForSync(defect, syncMode, previousById));
   const detailMap = new Map();
 
   for (let index = 0; index < candidates.length; index += ZENTAO_DETAIL_CONCURRENCY) {
@@ -861,7 +956,10 @@ async function enrichZentaoDefectsWithDetails(defects) {
     });
   }
 
-  return defects.map((defect) => ({ ...defect, ...(detailMap.get(defect.id) || {}) }));
+  return {
+    defects: defects.map((defect) => ({ ...defect, ...(detailMap.get(defect.id) || {}) })),
+    detailCount: candidates.length
+  };
 }
 
 function shouldFetchZentaoDetail(defect) {
@@ -870,6 +968,93 @@ function shouldFetchZentaoDetail(defect) {
     || status === "closed"
     || (status === "active" && (isFrontendOwner(defect.assignedTo) || isTestOwner(defect.openedBy)))
     || (isTestOwner(defect.openedBy) && isToday(defect.openedDate));
+}
+
+function shouldFetchZentaoDetailForSync(defect, syncMode, previousById) {
+  if (!shouldFetchZentaoDetail(defect)) return false;
+  if (syncMode.mode === "full") return true;
+  if (syncMode.addedAssignees?.length && shouldFetchDetailForAddedAssignees(defect, syncMode.addedAssignees)) return true;
+  if (isDefectChangedSinceLastFetch(defect, previousById.get(String(defect.id)), syncMode.lastFetchAt)) return true;
+  return false;
+}
+
+function shouldFetchDetailForAddedAssignees(defect, addedAssignees) {
+  const related = [defect.assignedTo, defect.openedBy, defect.resolvedBy, defect.assignedFrom, getInitialAssignedTo(defect)];
+  if (related.some((value) => addedAssignees.includes(normalizeAssigneeName(value)))) return true;
+  const status = normalizeZentaoStatus(defect.status);
+  return status === "closed" || status === "resolved" || isTestOwner(defect.assignedTo);
+}
+
+function isDefectChangedSinceLastFetch(nextDefect, previousDefect, lastFetchAt) {
+  if (!lastFetchAt) return true;
+  const modifiedAt = getDefectModifiedAt(nextDefect);
+  if (modifiedAt) {
+    return new Date(modifiedAt).getTime() >= new Date(lastFetchAt).getTime() - 60 * 1000;
+  }
+  if (!previousDefect) return isNewRelevantDefectSinceLastFetch(nextDefect, lastFetchAt);
+  return [
+    "title",
+    "status",
+    "priority",
+    "severity",
+    "assignedTo",
+    "openedBy",
+    "openedDate"
+  ].some((key) => String(nextDefect[key] || "") !== String(previousDefect[key] || ""));
+}
+
+function getDefectModifiedAt(defect) {
+  return defect.lastEditedDate || defect.updatedDate || defect.assignedAt || defect.resolvedDate || defect.closedDate || "";
+}
+
+function isNewRelevantDefectSinceLastFetch(defect, lastFetchAt) {
+  if (isDateAtOrAfter(defect.openedDate, lastFetchAt)) return true;
+  const assignees = getConfiguredAssigneeNames();
+  if (!assignees.length) return false;
+  return assignees.includes(normalizeAssigneeName(defect.assignedTo))
+    || (isTestOwner(defect.assignedTo) && assignees.includes(normalizeAssigneeName(defect.assignedFrom)));
+}
+
+function isDateAtOrAfter(value, compareTo) {
+  if (!value || !compareTo) return false;
+  const time = new Date(value).getTime();
+  const compareTime = new Date(compareTo).getTime();
+  return Number.isFinite(time) && Number.isFinite(compareTime) && time >= compareTime - 60 * 1000;
+}
+
+function mergeDefectSnapshots(previousDefects, nextDefects) {
+  const merged = new Map();
+  const nextIds = new Set((nextDefects || []).map((defect) => String(defect.id)));
+  (previousDefects || []).forEach((defect) => {
+    if (defect?.id && nextIds.has(String(defect.id))) merged.set(String(defect.id), defect);
+  });
+  (nextDefects || []).forEach((defect) => {
+    if (!defect?.id) return;
+    const previous = merged.get(String(defect.id)) || {};
+    merged.set(String(defect.id), mergeDefect(previous, defect));
+  });
+  return [...merged.values()];
+}
+
+function mergeDefect(previous, next) {
+  const merged = { ...previous, ...next };
+  [
+    "openedDate",
+    "resolvedDate",
+    "resolvedBy",
+    "closedDate",
+    "closedBy",
+    "activatedDate",
+    "activatedBy",
+    "initialAssignedTo",
+    "assignedFrom",
+    "assignedAt",
+    "assignedStatusAfter",
+    "lastEditedDate"
+  ].forEach((key) => {
+    if (!next[key] && previous[key]) merged[key] = previous[key];
+  });
+  return merged;
 }
 
 async function fetchZentaoBugDetail(defect) {
@@ -1058,6 +1243,7 @@ function parseBugRow(row) {
   const statusCell = getTableCell(row, "c-status");
   const openedByCell = getTableCell(row, "c-openedBy");
   const openedDateCell = getTableCell(row, "c-openedDate");
+  const lastEditedDateCell = getTableCell(row, "c-lastEditedDate") || getTableCell(row, "c-lastEdited");
   const titleMatch = titleCell?.match(/bug-view-\d+[^>]*>([\s\S]*?)<\/a>/i) || row.match(/bug-view-\d+[^>]*title=['"]([^'"]+)['"]/i);
   const title = titleMatch ? decodeHtml(stripTags(titleMatch[1]).trim()) : text;
   const severityMatch = severityCell?.match(/title=['"]([^'"]+)['"]/i)
@@ -1080,6 +1266,7 @@ function parseBugRow(row) {
     openedDate: openedDateCell ? normalizeZentaoDateTime(decodeHtml(stripTags(openedDateCell).trim())) : "",
     resolvedDate: "",
     closedDate: "",
+    lastEditedDate: lastEditedDateCell ? normalizeZentaoDateTime(decodeHtml(stripTags(lastEditedDateCell).trim())) : "",
     url: `${trimSlash(config.zentao.baseUrl)}/bug-view-${id}.html`
   };
 }
@@ -1469,7 +1656,7 @@ async function recordJobError(type, error) {
 }
 
 async function serveStatic(requestPath, req, res) {
-  if (requestPath === "/guest" || requestPath === "/guest/") {
+  if (isGuestRoutePath(requestPath)) {
     await serveGuestIndex(res);
     return;
   }
@@ -1554,9 +1741,13 @@ function isAdminRequest(req) {
 function isPublicRequest(req, url) {
   if (req.method !== "GET") return false;
   if (url.pathname === "/" || url.pathname === "/index.html") return true;
-  if (url.pathname === "/guest" || url.pathname === "/guest/") return true;
+  if (isGuestRoutePath(url.pathname)) return true;
   if (["/api/overview", "/api/defects", "/api/public-config", "/api/config-status", "/api/session"].includes(url.pathname)) return true;
   return ["/app.js", "/styles.css", "/favicon.svg"].includes(url.pathname);
+}
+
+function isGuestRoutePath(pathname) {
+  return pathname === "/guest" || pathname === "/guest/" || /^\/guest\/[^/]+\/?$/.test(pathname);
 }
 
 function getRequestCookie(req, name) {
@@ -1728,7 +1919,7 @@ async function saveStore() {
 }
 
 function defaultStore() {
-  return { defects: [], pushLogs: [], jobRuns: [], lastScheduledRun: {} };
+  return { defects: [], pushLogs: [], jobRuns: [], lastScheduledRun: {}, fetchSync: { assignees: [], assigneeWatermarks: {}, lastFetchAt: "" } };
 }
 
 function getTodayRange() {
