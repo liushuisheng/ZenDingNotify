@@ -20,6 +20,7 @@ const PUSH_TYPES = {
 };
 
 const ZENTAO_BUGS_PAGE_SIZE = 2000;
+const ZENTAO_RECENT_EDITED_LIMIT = 80;
 const ZENTAO_DETAIL_CONCURRENCY = 16;
 const MIN_DEFECT_CACHE_TTL_MS = 60 * 1000;
 const ADMIN_COOKIE_NAME = "zend_admin";
@@ -346,7 +347,8 @@ async function doFetchAndStoreDefects(trigger) {
 
   const normalizedDefects = prefilterDefectsBeforeDetails(normalizeDefects(defects));
   const enrichment = await enrichZentaoDefectsWithDetails(normalizedDefects, syncMode);
-  const mergedDefects = mergeDefectSnapshots(store.defects, enrichment.defects);
+  const recentTransferEnrichment = source === "zentao" ? await fetchRecentEditedRelatedDefects() : { defects: [], detailCount: 0 };
+  const mergedDefects = mergeDefectSnapshots(store.defects, [...enrichment.defects, ...recentTransferEnrichment.defects]);
   store.defects = filterClosedDefectsAfterDetails(filterConfiguredDefectsAfterDetails(mergedDefects));
   const finishedAt = new Date().toISOString();
   updateFetchSyncState(currentAssignees, finishedAt);
@@ -359,7 +361,12 @@ async function doFetchAndStoreDefects(trigger) {
     finishedAt,
     count: store.defects.length,
     listCount: normalizedDefects.length,
-    detailCount: enrichment.detailCount,
+    detailCount: enrichment.detailCount + recentTransferEnrichment.detailCount,
+    recentEditedCount: recentTransferEnrichment.recentEditedCount || 0,
+    recentMatchedCount: recentTransferEnrichment.recentMatchedCount || 0,
+    recentDetailFailureCount: recentTransferEnrichment.recentDetailFailureCount || 0,
+    recentDetailFailureIds: recentTransferEnrichment.recentDetailFailureIds || [],
+    recentDetailFailureMessages: recentTransferEnrichment.recentDetailFailureMessages || [],
     syncMode: syncMode.mode,
     addedAssignees,
     durationMs: Date.now() - new Date(startedAt).getTime(),
@@ -367,7 +374,7 @@ async function doFetchAndStoreDefects(trigger) {
   });
   await saveStore();
 
-  return { ok: true, source, count: store.defects.length, detailCount: enrichment.detailCount, syncMode: syncMode.mode };
+  return { ok: true, source, count: store.defects.length, detailCount: enrichment.detailCount + recentTransferEnrichment.detailCount, syncMode: syncMode.mode };
 }
 
 function getLastSuccessfulFetchAt() {
@@ -589,6 +596,80 @@ async function fetchZentaoLegacyBugPage(productId) {
   }
 
   return "";
+}
+
+async function fetchZentaoLegacyRecentEditedBugPage(productId) {
+  const base = trimSlash(config.zentao.baseUrl);
+  const headers = {
+    Cookie: config.zentao.cookie,
+    Accept: "application/json,text/html;q=0.9,*/*;q=0.8",
+    Referer: `${base}/my/`,
+    "User-Agent": "Mozilla/5.0 ZenDingNotify/0.1"
+  };
+  const response = await fetch(`${base}/bug-browse-${productId}-0-all-0-lastEditedDate_desc-200-200-1.html`, { headers });
+  if (!response.ok) throw new Error(`Get Zentao recent edited bugs failed: ${response.status}`);
+  return response.text();
+}
+
+async function fetchRecentEditedRelatedDefects() {
+  if (!config.zentao.enabled || !config.zentao.cookie) return { defects: [], detailCount: 0 };
+  const productIds = config.zentao.productIds?.length ? config.zentao.productIds : [0];
+  const recentRowsById = new Map();
+  for (const productId of productIds) {
+    const text = await fetchZentaoLegacyRecentEditedBugPage(productId);
+    if (isZentaoLoginRedirect(text)) throw new Error("Zentao cookie is invalid or expired; request was redirected to login page");
+    extractLegacyBugList(text).slice(0, ZENTAO_RECENT_EDITED_LIMIT).forEach((bug) => {
+      if (bug?.id && !recentRowsById.has(String(bug.id))) recentRowsById.set(String(bug.id), bug);
+    });
+  }
+  const recentDefects = normalizeDefects([...recentRowsById.values()].map((bug) => ({ ...bug, recentlyEdited: true })));
+  const detailMap = new Map();
+  let detailFailures = [];
+  for (let index = 0; index < recentDefects.length; index += ZENTAO_DETAIL_CONCURRENCY) {
+    const chunk = recentDefects.slice(index, index + ZENTAO_DETAIL_CONCURRENCY);
+    const details = await Promise.all(chunk.map(async (defect) => {
+      try {
+        return { detail: await fetchZentaoBugDetailWithRetry(defect) };
+      } catch (error) {
+        return { error };
+      }
+    }));
+    details.forEach((result, detailIndex) => {
+      if (result.detail) {
+        detailMap.set(String(chunk[detailIndex].id), result.detail);
+      } else {
+        detailFailures.push({ defect: chunk[detailIndex], error: result.error });
+      }
+    });
+  }
+  if (detailFailures.length) {
+    const finalFailures = [];
+    for (const failure of detailFailures) {
+      await delay(300);
+      const defect = failure.defect;
+      const detail = await fetchZentaoBugDetailWithRetry(defect, 3).catch(() => null);
+      if (detail) {
+        detailMap.set(String(defect.id), detail);
+      } else {
+        finalFailures.push(failure);
+      }
+    }
+    detailFailures = finalFailures;
+  }
+  const enrichedDefects = recentDefects.map((defect) => ({ ...defect, ...(detailMap.get(String(defect.id)) || {}) }));
+  const defects = filterConfiguredDefectsAfterDetails(enrichedDefects);
+  return {
+    defects,
+    detailCount: recentDefects.length,
+    recentEditedCount: recentDefects.length,
+    recentMatchedCount: defects.length,
+    recentDetailFailureCount: detailFailures.length,
+    recentDetailFailureIds: detailFailures.map((failure) => failure.defect.id).slice(0, 10),
+    recentDetailFailureMessages: detailFailures.map((failure) => ({
+      id: failure.defect.id,
+      message: failure.error?.message || String(failure.error || "")
+    })).slice(0, 3)
+  };
 }
 
 async function getAssigneeOptions() {
@@ -857,7 +938,7 @@ function getOwnerScopeFields(defect) {
     return [defect.assignedFrom, getInitialAssignedTo(defect)];
   }
   if (isTodayTransferredDefect(defect)) {
-    return [defect.assignedFrom, defect.assignedTo];
+    return [getTransferFrom(defect), getTransferTo(defect)];
   }
   if (isTodayInitiallyAssignedDefect(defect)) {
     return [getInitialAssignedTo(defect), defect.assignedTo];
@@ -874,7 +955,7 @@ function isDefectOwnedByConfiguredAssignee(defect, assignees) {
     return assignees.includes(normalizeAssigneeName(defect.assignedFrom));
   }
   if (isTodayTransferredDefect(defect)) {
-    return assignees.includes(normalizeAssigneeName(defect.assignedFrom));
+    return assignees.includes(normalizeAssigneeName(getTransferFrom(defect)));
   }
   if (isTodayInitiallyAssignedDefect(defect)) {
     return assignees.includes(normalizeAssigneeName(getInitialAssignedTo(defect)));
@@ -902,7 +983,12 @@ function normalizeDefects(defects) {
     assignedFrom: bug.assignedFrom || "",
     assignedAt: bug.assignedAt || "",
     assignedStatusAfter: bug.assignedStatusAfter || "",
+    transferFrom: bug.transferFrom || "",
+    transferTo: bug.transferTo || "",
+    transferAt: bug.transferAt || "",
+    transferStatusAfter: bug.transferStatusAfter || "",
     lastEditedDate: bug.lastEditedDate || bug.lastEditedAt || bug.editedDate || bug.updatedDate || "",
+    recentlyEdited: Boolean(bug.recentlyEdited),
     url: bug.url || (bug.id && config.zentao.baseUrl ? `${trimSlash(config.zentao.baseUrl)}/bug-view-${bug.id}.html` : "")
   }));
 }
@@ -919,6 +1005,7 @@ function prefilterDefectsBeforeDetails(defects) {
     if (["resolved", "closed"].includes(status)) {
       return [defect.resolvedBy, defect.assignedFrom, defect.assignedTo].some((value) => assignees.includes(normalizeAssigneeName(value)));
     }
+    if (status === "active" && (defect.recentlyEdited || isToday(getDefectModifiedAt(defect)))) return true;
     if (status === "active" && isTestOwner(defect.openedBy) && isInRange(defect.openedDate, today)) return true;
     return assignees.includes(normalizeAssigneeName(defect.assignedTo));
   });
@@ -950,7 +1037,7 @@ async function enrichZentaoDefectsWithDetails(defects, syncMode = { mode: "full"
 
   for (let index = 0; index < candidates.length; index += ZENTAO_DETAIL_CONCURRENCY) {
     const chunk = candidates.slice(index, index + ZENTAO_DETAIL_CONCURRENCY);
-    const details = await Promise.all(chunk.map((defect) => fetchZentaoBugDetail(defect).catch(() => null)));
+    const details = await Promise.all(chunk.map((defect) => fetchZentaoBugDetailWithRetry(defect).catch(() => null)));
     details.forEach((detail, detailIndex) => {
       if (detail) detailMap.set(chunk[detailIndex].id, detail);
     });
@@ -966,6 +1053,8 @@ function shouldFetchZentaoDetail(defect) {
   const status = normalizeZentaoStatus(defect.status);
   return isTestOwner(defect.assignedTo)
     || status === "closed"
+    || (status === "active" && defect.recentlyEdited)
+    || (status === "active" && isToday(getDefectModifiedAt(defect)))
     || (status === "active" && (isFrontendOwner(defect.assignedTo) || isTestOwner(defect.openedBy)))
     || (isTestOwner(defect.openedBy) && isToday(defect.openedDate));
 }
@@ -1008,6 +1097,8 @@ function getDefectModifiedAt(defect) {
 }
 
 function isNewRelevantDefectSinceLastFetch(defect, lastFetchAt) {
+  if (defect.recentlyEdited) return true;
+  if (isToday(getDefectModifiedAt(defect))) return true;
   if (isDateAtOrAfter(defect.openedDate, lastFetchAt)) return true;
   const assignees = getConfiguredAssigneeNames();
   if (!assignees.length) return false;
@@ -1050,7 +1141,12 @@ function mergeDefect(previous, next) {
     "assignedFrom",
     "assignedAt",
     "assignedStatusAfter",
-    "lastEditedDate"
+    "transferFrom",
+    "transferTo",
+    "transferAt",
+    "transferStatusAfter",
+    "lastEditedDate",
+    "recentlyEdited"
   ].forEach((key) => {
     if (!next[key] && previous[key]) merged[key] = previous[key];
   });
@@ -1071,6 +1167,19 @@ async function fetchZentaoBugDetail(defect) {
   const html = await response.text();
   if (isZentaoLoginRedirect(html)) throw new Error("Zentao cookie is invalid or expired; request was redirected to login page");
   return parseBugDetail(html, defect);
+}
+
+async function fetchZentaoBugDetailWithRetry(defect, retries = 2) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await fetchZentaoBugDetail(defect);
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) await delay(200 * (attempt + 1));
+    }
+  }
+  throw lastError;
 }
 
 function parseBugDetail(html, defect) {
@@ -1132,6 +1241,19 @@ function parseBugDetail(html, defect) {
     detail.assignedFrom = latestAssign[2].trim();
     detail.assignedAt = normalizeZentaoDateTime(latestAssign[1]);
     detail.assignedStatusAfter = getStatusAfterAction(text, detail.assignedAt) || detail.assignedStatusAfter || "";
+  }
+
+  const latestTransferAssign = [...assignActions].reverse().find((match) => {
+    const transferTo = match[3].trim();
+    const transferAt = normalizeZentaoDateTime(match[1]);
+    const statusAfter = getStatusAfterAction(text, transferAt);
+    return !/^Closed$/i.test(transferTo) && normalizeZentaoStatus(statusAfter) !== "resolved";
+  });
+  if (latestTransferAssign) {
+    detail.transferFrom = latestTransferAssign[2].trim();
+    detail.transferTo = latestTransferAssign[3].trim();
+    detail.transferAt = normalizeZentaoDateTime(latestTransferAssign[1]);
+    detail.transferStatusAfter = getStatusAfterAction(text, detail.transferAt) || "";
   }
 
   const testAssign = [...assignActions].reverse().find((match) => isTestOwner(match[3]));
@@ -1216,7 +1338,7 @@ function extractLegacyBugList(text) {
 }
 
 function isZentaoLoginRedirect(text) {
-  return /user-login|m=user&f=login|用户登录|登录/.test(String(text || ""));
+  return /user-login|m=user&f=login|用户登录|id=["']login|name=["']account/i.test(String(text || ""));
 }
 
 function getZentaoPagerTotal(text, browseType = "unresolved") {
@@ -1367,7 +1489,7 @@ function groupByOwner(defects, open, todayAdded, todayPendingTest) {
       normalOpen: ownedOpen.filter((defect) => !isUrgentDefect(defect)).length,
       pendingTest: ownedPendingTest.length,
       todayAdded: todayAdded.filter((defect) => namesEqual(getInitialAssignedTo(defect) || "unassigned", account)).length,
-      todayTransferred: todayTransferred.filter((defect) => namesEqual(defect.assignedFrom, account)).length,
+      todayTransferred: todayTransferred.filter((defect) => namesEqual(getTransferFrom(defect), account)).length,
       todayReturned: todayReturned.filter((defect) => namesEqual(defect.assignedTo, account)).length,
       todayResolved: todayPendingTest.filter((defect) => getDeveloperOwnerFields(defect).some((owner) => namesEqual(owner, account))).length
     };
@@ -1387,6 +1509,9 @@ function isConfiguredPersonDefect(defect) {
   }
   if (isTestOwner(defect.assignedTo)) {
     return configured.some((assignee) => namesEqual(defect.assignedFrom, assignee));
+  }
+  if (isTodayTransferredDefect(defect)) {
+    return configured.some((assignee) => namesEqual(getTransferFrom(defect), assignee));
   }
   return configured.some((assignee) => namesEqual(defect.assignedTo, assignee));
 }
@@ -1475,18 +1600,34 @@ function isPendingTestDefect(defect) {
 }
 
 function isTodayTransferredDefect(defect) {
-  return Boolean(defect.assignedFrom)
-    && Boolean(defect.assignedTo)
-    && !namesEqual(defect.assignedFrom, defect.assignedTo)
-    && isToday(defect.assignedAt)
-    && (!isTestOwner(defect.assignedTo) || !isResolvedByTransferAction(defect));
+  return Boolean(getTransferFrom(defect))
+    && Boolean(getTransferTo(defect))
+    && !namesEqual(getTransferFrom(defect), getTransferTo(defect))
+    && isToday(getTransferAt(defect))
+    && !isResolvedByTransferAction(defect);
 }
 
 function isResolvedByTransferAction(defect) {
-  if (normalizeZentaoStatus(defect.assignedStatusAfter) === "resolved") return true;
+  if (normalizeZentaoStatus(getTransferStatusAfter(defect)) === "resolved") return true;
   return Boolean(defect.resolvedDate)
-    && isSameMinute(defect.resolvedDate, defect.assignedAt)
-    && namesEqual(defect.resolvedBy, defect.assignedFrom);
+    && isSameMinute(defect.resolvedDate, getTransferAt(defect))
+    && namesEqual(defect.resolvedBy, getTransferFrom(defect));
+}
+
+function getTransferFrom(defect) {
+  return defect.transferFrom || defect.assignedFrom || "";
+}
+
+function getTransferTo(defect) {
+  return defect.transferTo || defect.assignedTo || "";
+}
+
+function getTransferAt(defect) {
+  return defect.transferAt || defect.assignedAt || "";
+}
+
+function getTransferStatusAfter(defect) {
+  return defect.transferStatusAfter || defect.assignedStatusAfter || "";
 }
 
 function isTodayReturnedDefect(defect) {
@@ -1566,6 +1707,10 @@ function namesEqual(left, right) {
 
 function isSameMinute(left, right) {
   return normalizeZentaoDateTime(left).slice(0, 16) === normalizeZentaoDateTime(right).slice(0, 16);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function scheduleJobs() {

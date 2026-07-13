@@ -527,7 +527,7 @@ function renderDefects(options = {}) {
         badge(statusBadgeTone(defect.status), statusText(defect.status))
       ];
       if (showOwnerColumn) row.push(ownerCell(defect, state.defectListMode));
-      if (showTransferToColumn) row.push(titledText(formatPersonDisplayName(defect.assignedTo)));
+      if (showTransferToColumn) row.push(titledText(formatPersonDisplayName(getTransferTo(defect))));
       if (showTransferFromColumn) row.push(titledText(formatPersonDisplayName(defect.assignedFrom)));
       if (showResolverColumn) row.push(titledText(formatPersonDisplayName(getResolverNameForMode(defect, state.defectListMode))));
       if (showClosedByColumn) row.push(titledText(formatPersonDisplayName(defect.closedBy)));
@@ -667,7 +667,8 @@ function matchesOwnerFilters(defect, mode) {
 function getOwnerMatchFields(defect, mode) {
   if (mode === "ownerTodayAdded") return [getInitialAssignedTo(defect)];
   if (["ownerOpen", "ownerUrgent", "ownerNormal", "ownerTodayReturned"].includes(mode)) return [defect.assignedTo];
-  if (["ownerPendingTest", "ownerTodayTransferred"].includes(mode)) return [defect.assignedFrom];
+  if (mode === "ownerTodayTransferred") return [getTransferFrom(defect)];
+  if (mode === "ownerPendingTest") return [defect.assignedFrom];
   if (mode === "ownerTodayResolved") return getDeveloperOwnerFields(defect);
   return [getDefectOwnerName(defect)];
 }
@@ -681,10 +682,10 @@ function isConfiguredPersonDefect(defect, mode) {
   const configured = state.config?.rules?.assignees || [];
   if (!configured.length) return true;
   if (mode === "ownerTodayTransferred" && isTodayTransferredDefect(defect)) {
-    return configured.some((assignee) => namesMatch(defect.assignedFrom, assignee));
+    return configured.some((assignee) => namesMatch(getTransferFrom(defect), assignee));
   }
   if (mode === "todayAdded" && isTodayTransferredDefect(defect)) {
-    return configured.some((assignee) => namesMatch(defect.assignedFrom, assignee));
+    return configured.some((assignee) => namesMatch(getTransferFrom(defect), assignee));
   }
   if (mode === "ownerTodayReturned" && isTodayReturnedDefect(defect)) {
     return configured.some((assignee) => namesMatch(defect.assignedTo, assignee));
@@ -729,7 +730,7 @@ function getModeDate(defect, mode) {
     todayClosed: () => defect.closedDate,
     resolvedPendingVerify: () => getDeveloperResolvedAt(defect) || getTerminalDate(defect),
     ownerTodayAdded: () => defect.openedDate,
-    ownerTodayTransferred: () => defect.assignedAt,
+    ownerTodayTransferred: () => getTransferAt(defect),
     ownerTodayReturned: () => defect.assignedAt,
     ownerTodayResolved: () => getDeveloperResolvedAt(defect) || getTerminalDate(defect)
   };
@@ -1763,18 +1764,34 @@ function isPendingTestDefect(defect) {
 }
 
 function isTodayTransferredDefect(defect) {
-  return Boolean(defect.assignedFrom)
-    && Boolean(defect.assignedTo)
-    && !namesMatch(defect.assignedFrom, defect.assignedTo)
-    && isToday(defect.assignedAt)
-    && (!isTestOwner(defect.assignedTo) || !isResolvedByTransferAction(defect));
+  return Boolean(getTransferFrom(defect))
+    && Boolean(getTransferTo(defect))
+    && !namesMatch(getTransferFrom(defect), getTransferTo(defect))
+    && isToday(getTransferAt(defect))
+    && !isResolvedByTransferAction(defect);
 }
 
 function isResolvedByTransferAction(defect) {
-  if (normalizeStatus(defect.assignedStatusAfter) === "resolved") return true;
+  if (normalizeStatus(getTransferStatusAfter(defect)) === "resolved") return true;
   return Boolean(defect.resolvedDate)
-    && normalizeDateMinute(defect.resolvedDate) === normalizeDateMinute(defect.assignedAt)
-    && namesMatch(defect.resolvedBy, defect.assignedFrom);
+    && normalizeDateMinute(defect.resolvedDate) === normalizeDateMinute(getTransferAt(defect))
+    && namesMatch(defect.resolvedBy, getTransferFrom(defect));
+}
+
+function getTransferFrom(defect) {
+  return defect.transferFrom || defect.assignedFrom || "";
+}
+
+function getTransferTo(defect) {
+  return defect.transferTo || defect.assignedTo || "";
+}
+
+function getTransferAt(defect) {
+  return defect.transferAt || defect.assignedAt || "";
+}
+
+function getTransferStatusAfter(defect) {
+  return defect.transferStatusAfter || defect.assignedStatusAfter || "";
 }
 
 function isTodayReturnedDefect(defect) {
