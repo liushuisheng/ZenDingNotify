@@ -206,12 +206,22 @@ async function route(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/overview") {
-    sendJson(res, 200, buildOverview({ owner: getOwnerScopeFromUrl(url) }));
+    const ownerScope = getValidatedOwnerScopeFromUrl(url);
+    if (ownerScope.invalid) {
+      sendJson(res, 404, { ok: false, error: "人员不存在", message: `人员不存在：${ownerScope.raw}` });
+      return;
+    }
+    sendJson(res, 200, buildOverview({ owner: ownerScope.owner }));
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/defects") {
-    sendJson(res, 200, { defects: getFilteredDefects({ includeStatuses: false, owner: getOwnerScopeFromUrl(url) }) });
+    const ownerScope = getValidatedOwnerScopeFromUrl(url);
+    if (ownerScope.invalid) {
+      sendJson(res, 404, { ok: false, error: "人员不存在", message: `人员不存在：${ownerScope.raw}` });
+      return;
+    }
+    sendJson(res, 200, { defects: getFilteredDefects({ includeStatuses: false, owner: ownerScope.owner }) });
     return;
   }
 
@@ -918,11 +928,18 @@ function getOwnerScopeFromUrl(url) {
   return resolveConfiguredOwnerScope(url.searchParams.get("owner") || "");
 }
 
+function getValidatedOwnerScopeFromUrl(url) {
+  const raw = url.searchParams.get("owner") || "";
+  if (!raw) return { owner: "", invalid: false, raw: "" };
+  const owner = resolveConfiguredOwnerScope(raw);
+  return { owner, invalid: !owner, raw };
+}
+
 function resolveConfiguredOwnerScope(value) {
   const normalized = normalizeAssigneeName(value);
   if (!normalized) return "";
   const configured = getConfiguredAssigneeNames();
-  return configured.find((assignee) => namesEqual(assignee, normalized)) || normalized;
+  return configured.find((assignee) => namesEqual(assignee, normalized)) || "";
 }
 
 function isDefectOwnedByOwner(defect, owner) {
@@ -1658,7 +1675,7 @@ function isReactivatedByTestToFrontendDefect(defect) {
 
 function isFrontendResolvedDefect(defect) {
   return ["resolved", "closed"].includes(normalizeZentaoStatus(defect.status))
-    && isResolvedByConfiguredOwnerToTest(defect);
+    && isFrontendOwner(getResolverName(defect));
 }
 
 function isResolvedByConfiguredOwnerToTest(defect) {

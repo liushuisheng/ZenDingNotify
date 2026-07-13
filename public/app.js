@@ -11,6 +11,7 @@ const state = {
   lastFetchAt: "",
   fetching: false,
   view: "overview",
+  ownerScope: "",
   authenticated: false
 };
 
@@ -77,7 +78,7 @@ const zentaoAccountAliases = {
 };
 
 document.body.classList.toggle("guest-mode", guestMode);
-document.body.classList.toggle("guest-owner-mode", hasGuestOwnerScope());
+document.body.classList.toggle("guest-owner-mode", hasOwnerScope());
 document.querySelectorAll(".nav-item").forEach((button) => {
   const view = button.dataset.view;
   const isAllowed = allowedViews.includes(view);
@@ -98,8 +99,20 @@ window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeLogModal();
 });
 
-function handleRouteChange() {
+async function handleRouteChange() {
+  const route = parseRoute();
+  const previousOwnerScope = state.ownerScope;
+  state.ownerScope = route.owner || "";
+  updateOwnerScopeUi();
   switchView(getViewFromRoute(), { updateRoute: false });
+  if (previousOwnerScope !== state.ownerScope && state.authenticated) {
+    try {
+      await loadAll();
+    } catch (error) {
+      showToast(error.message || "人员视角加载失败", "error");
+    }
+    return;
+  }
   if (state.view === "defects") {
     applyDefectRouteParams();
     renderOwnerFilterOptions();
@@ -120,12 +133,13 @@ document.getElementById("logModal").addEventListener("click", (event) => {
   if (event.target.id === "logModal") closeLogModal();
 });
 document.getElementById("ownerFilterTrigger").addEventListener("click", () => {
-  if (hasGuestOwnerScope()) return;
+  if (hasOwnerScope()) return;
   document.getElementById("ownerMultiSelect").classList.toggle("open");
 });
 document.getElementById("configForm").addEventListener("submit", saveConfig);
 document.getElementById("loginForm").addEventListener("submit", loginAdmin);
 document.getElementById("logoutBtn").addEventListener("click", logoutAdmin);
+document.getElementById("brandHomeBtn").addEventListener("click", navigateHomeFromBrand);
 document.getElementById("reloadConfigBtn").addEventListener("click", loadConfig);
 document.getElementById("scheduleEnabled").addEventListener("change", toggleSchedulerEnabled);
 document.getElementById("addP1P2Time").addEventListener("click", () => addP1P2TimeInput(""));
@@ -141,6 +155,8 @@ document.querySelectorAll("[data-scheduler-rule]").forEach((input) => {
 document.addEventListener("click", (event) => {
   const ownerSelect = document.getElementById("ownerMultiSelect");
   if (!ownerSelect.contains(event.target)) ownerSelect.classList.remove("open");
+  const scopeBadge = document.getElementById("ownerScopeBadge");
+  if (scopeBadge && !scopeBadge.contains(event.target)) scopeBadge.classList.remove("open");
 });
 
 document.querySelectorAll(".action-card").forEach((button) => {
@@ -166,7 +182,11 @@ async function initApp() {
   if (guestMode) {
     showAppShell();
     switchView(getViewFromRoute(), { updateRoute: false });
-    await loadAll();
+    try {
+      await loadAll();
+    } catch (error) {
+      showGuestError(error.message || "访客地址不可用");
+    }
     return;
   }
 
@@ -175,6 +195,8 @@ async function initApp() {
     if (session.authenticated) {
       state.authenticated = true;
       showAppShell();
+      state.ownerScope = parseRoute().owner || "";
+      updateOwnerScopeUi();
       switchView(getViewFromRoute(), { updateRoute: false });
       await loadAll();
       return;
@@ -205,7 +227,10 @@ function renderCurrentRole() {
   const roleText = document.getElementById("currentRoleText");
   const logoutButton = document.getElementById("logoutBtn");
   const isAdmin = !guestMode && state.authenticated;
-  if (roleText) roleText.textContent = isAdmin ? "管理员登录" : (guestOwner ? `访客登录：${formatGuestOwnerDisplay(guestOwner)}` : "访客登录");
+  if (roleText) {
+    if (isAdmin) roleText.textContent = "管理员";
+    else roleText.textContent = guestOwner ? `访客登录：${formatGuestOwnerDisplay(guestOwner)}` : "访客登录";
+  }
   if (logoutButton) logoutButton.classList.toggle("hidden", !isAdmin);
 }
 
@@ -216,6 +241,81 @@ function formatGuestOwnerDisplay(value) {
 
 function hasGuestOwnerScope() {
   return guestMode && Boolean(guestOwner);
+}
+
+function hasOwnerScope() {
+  return Boolean(getActiveOwnerScope());
+}
+
+function getActiveOwnerScope() {
+  return guestOwner || state.ownerScope || "";
+}
+
+function updateOwnerScopeUi() {
+  document.body.classList.toggle("guest-owner-mode", hasOwnerScope());
+  renderCurrentRole();
+  renderOwnerScopeBadge();
+}
+
+function renderOwnerScopeBadge() {
+  const badge = document.getElementById("ownerScopeBadge");
+  if (!badge) return;
+  const isAdmin = !guestMode && state.authenticated;
+  const isScopedView = ["overview", "defects"].includes(state.view);
+  const shouldShow = isAdmin && (Boolean(state.ownerScope) ? isScopedView : state.view === "overview");
+  badge.classList.toggle("hidden", !shouldShow);
+  badge.classList.toggle("icon-only", shouldShow && !state.ownerScope);
+  badge.classList.remove("open");
+  if (!shouldShow) {
+    badge.innerHTML = "";
+    return;
+  }
+
+  const currentName = formatGuestOwnerDisplay(state.ownerScope);
+  const options = getOwnerScopeSwitchOptions();
+  badge.innerHTML = `
+    ${state.ownerScope ? `<span class="owner-scope-text">当前视角：${escapeHtml(currentName)}</span>` : ""}
+    <button class="owner-scope-switch" type="button" title="切换人员视角" aria-label="切换人员视角">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M17 1l4 4-4 4" />
+        <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+        <path d="M7 23l-4-4 4-4" />
+        <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+      </svg>
+    </button>
+    <div class="owner-scope-menu">
+      ${options.map((option) => `
+        <button type="button" class="owner-scope-option ${option.account === state.ownerScope ? "active" : ""}" data-owner-scope="${escapeHtml(option.account)}">
+          ${escapeHtml(option.name)}
+        </button>
+      `).join("")}
+    </div>
+  `;
+  badge.querySelector(".owner-scope-switch")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    badge.classList.toggle("open");
+  });
+  badge.querySelectorAll("[data-owner-scope]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextOwner = button.dataset.ownerScope;
+      if (!nextOwner || nextOwner === state.ownerScope) {
+        badge.classList.remove("open");
+        return;
+      }
+      window.location.hash = `#/${encodeURIComponent(nextOwner)}/${state.view || "overview"}`;
+    });
+  });
+}
+
+function getOwnerScopeSwitchOptions() {
+  const configured = state.config?.rules?.assignees || [];
+  const fallbackOwners = state.overview?.owners?.map((owner) => owner.name || owner.account).filter(Boolean) || [];
+  const owners = configured.length ? configured : fallbackOwners;
+  return owners
+    .map((name) => ({ name, account: getGuestAccountAlias(name) }))
+    .filter((option) => !namesMatch(option.name, "陈加鹏") && !["chenjp", "chenjiapeng"].includes(option.account))
+    .filter((option) => option.account)
+    .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
 }
 
 async function loginAdmin(event) {
@@ -236,6 +336,8 @@ async function loginAdmin(event) {
     state.authenticated = true;
     document.getElementById("adminPassword").value = "";
     showAppShell();
+    state.ownerScope = parseRoute().owner || "";
+    updateOwnerScopeUi();
     switchView(getViewFromRoute(), { updateRoute: false });
     await loadAll();
   } catch (loginError) {
@@ -249,6 +351,27 @@ async function logoutAdmin() {
   state.authenticated = false;
   state.config = null;
   showLoginScreen();
+}
+
+async function navigateHomeFromBrand() {
+  if (guestMode) {
+    window.location.href = "/guest";
+    return;
+  }
+  const hadOwnerScope = Boolean(state.ownerScope);
+  state.ownerScope = "";
+  updateOwnerScopeUi();
+  switchView("overview", { replaceRoute: true });
+  if (!state.authenticated) return;
+  if (hadOwnerScope) {
+    try {
+      await loadAll();
+    } catch (error) {
+      showToast(error.message || "首页加载失败", "error");
+    }
+  } else if (state.overview) {
+    renderOverview();
+  }
 }
 
 async function loadAll() {
@@ -265,6 +388,7 @@ async function loadAll() {
   state.logs = logs.logs;
   state.assignees = assignees.assignees || [];
   state.config = configData.config;
+  renderOwnerScopeBadge();
   renderStatus(status);
   renderOverview();
   applyDefectRouteParams();
@@ -277,8 +401,9 @@ async function loadAll() {
 }
 
 function scopedApiUrl(path) {
-  if (!guestOwner) return path;
-  const params = new URLSearchParams({ owner: guestOwner });
+  const owner = getActiveOwnerScope();
+  if (!owner) return path;
+  const params = new URLSearchParams({ owner });
   return `${path}?${params.toString()}`;
 }
 
@@ -311,8 +436,28 @@ async function pollFetchStatus() {
 
 async function getJson(url) {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`${url} ${response.status}`);
-  return response.json();
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.message || data.error || `${url} ${response.status}`);
+  return data;
+}
+
+function showGuestError(message) {
+  const loginScreen = document.getElementById("loginScreen");
+  document.body.classList.add("login-mode");
+  loginScreen.classList.remove("hidden");
+  loginScreen.innerHTML = `
+    <div class="login-panel guest-error-panel" role="alert">
+      <div class="brand login-brand">
+        <div class="brand-mark">ZD</div>
+        <div>
+          <strong>访客地址不可用</strong>
+          <span>人员不存在</span>
+        </div>
+      </div>
+      <div class="guest-error-message">${escapeHtml(message)}</div>
+      <a class="secondary guest-error-link" href="/guest">返回访客总览</a>
+    </div>
+  `;
 }
 
 function getViewFromRoute() {
@@ -323,8 +468,20 @@ function getViewFromRoute() {
 function parseRoute() {
   const hash = window.location.hash || viewRoutes.overview;
   const [path, query = ""] = hash.split("?");
-  const view = Object.entries(viewRoutes).find(([, route]) => route === path)?.[0] || "overview";
-  return { view, path, params: new URLSearchParams(query) };
+  const routeView = Object.entries(viewRoutes).find(([, route]) => route === path)?.[0];
+  if (routeView) return { owner: "", view: routeView, path, params: new URLSearchParams(query) };
+
+  const parts = path.replace(/^#\/?/, "").split("/").filter(Boolean).map((part) => {
+    try {
+      return decodeURIComponent(part);
+    } catch {
+      return part;
+    }
+  });
+  if (!guestMode && parts.length >= 2 && titles[parts[1]]) {
+    return { owner: parts[0], view: parts[1], path, params: new URLSearchParams(query) };
+  }
+  return { owner: "", view: "overview", path, params: new URLSearchParams(query) };
 }
 
 function switchView(view, options = {}) {
@@ -336,13 +493,19 @@ function switchView(view, options = {}) {
   document.getElementById(`${view}View`).classList.add("active");
   document.getElementById("viewTitle").textContent = titles[view][0];
   document.getElementById("viewSubtitle").textContent = titles[view][1];
+  renderOwnerScopeBadge();
 
-  const nextRoute = viewRoutes[view];
+  const nextRoute = getScopedViewRoute(view);
   if (options.updateRoute !== false && options.replaceRoute && window.location.hash !== nextRoute) {
     window.history.replaceState(null, "", nextRoute);
   } else if (options.updateRoute !== false && window.location.hash !== nextRoute) {
     window.location.hash = nextRoute;
   }
+}
+
+function getScopedViewRoute(view) {
+  if (!guestMode && state.ownerScope) return `#/${encodeURIComponent(state.ownerScope)}/${view}`;
+  return viewRoutes[view];
 }
 
 function renderStatus(status) {
@@ -396,13 +559,13 @@ function renderOverview() {
   document.getElementById("normalCount").textContent = overview.normalOpen.length;
 
   const ownerStatsPanel = document.querySelector(".owner-stats-panel");
-  ownerStatsPanel?.classList.toggle("hidden", hasGuestOwnerScope());
-  if (hasGuestOwnerScope()) return;
+  ownerStatsPanel?.classList.toggle("hidden", hasOwnerScope());
+  if (hasOwnerScope()) return;
 
   document.getElementById("ownerTable").innerHTML = renderTable(
     ["负责人", "未处理缺陷", "P1/P2 未处理", "普通未处理", "待测试", "今日新增", "今日转出", "今日转入", "今日解决"],
     overview.owners.map((owner) => [
-      owner.name,
+      ownerGuestLink(owner),
       ownerStatButton(owner, "ownerOpen", getOwnerOpenTotal(owner)),
       ownerStatButton(owner, "ownerUrgent", owner.urgentOpen),
       ownerStatButton(owner, "ownerNormal", owner.normalOpen),
@@ -419,7 +582,7 @@ function renderOverview() {
 }
 
 function getOverviewMetrics(overview) {
-  if (hasGuestOwnerScope()) {
+  if (hasOwnerScope()) {
     const owner = overview.owners[0] || {};
     return [
       ["今日新增", owner.todayAdded || overview.stats.todayAdded || 0, "incoming", "todayAdded"],
@@ -474,6 +637,33 @@ function ownerStatButton(owner, mode, value) {
   return `<button class="owner-stat-link" type="button" data-owner-stat-mode="${escapeHtml(mode)}" data-owner="${escapeHtml(owner.account)}" ${disabled ? "disabled" : ""} title="${disabled ? "暂无缺陷" : `查看${escapeHtml(owner.name)}的缺陷详情`}">${escapeHtml(value)}</button>`;
 }
 
+function ownerGuestLink(owner) {
+  const name = owner.name || owner.account || "";
+  const guestAccount = getGuestAccountForOwner(owner);
+  if (!guestAccount) return escapeHtml(name || "-");
+  const href = guestMode ? `/guest/${encodeURIComponent(guestAccount)}` : `#/${encodeURIComponent(guestAccount)}/overview`;
+  const title = guestMode ? `以${escapeHtml(name)}视角打开访客页面` : `以${escapeHtml(name)}视角打开总览`;
+  return `<a class="owner-guest-link" href="${href}" title="${title}">${escapeHtml(name)}</a>`;
+}
+
+function getGuestAccountForOwner(owner) {
+  const normalized = normalizePersonName(owner.account || owner.name || "");
+  if (!normalized) return "";
+  const configured = state.config?.rules?.assignees || [];
+  const configuredOwner = configured.find((assignee) => namesMatch(assignee, normalized));
+  if (!configuredOwner) return "";
+  return getGuestAccountAlias(configuredOwner);
+}
+
+function getGuestAccountAlias(ownerName) {
+  const normalized = normalizePersonName(ownerName);
+  const candidates = Object.entries(zentaoAccountAliases)
+    .filter(([account, name]) => /^[a-z][a-z0-9-]*$/i.test(account) && normalizePersonName(name) === normalized)
+    .map(([account]) => account)
+    .sort((left, right) => left.length - right.length || left.localeCompare(right));
+  return candidates[0] || "";
+}
+
 function getOwnerOpenTotal(owner) {
   return Number(owner.openTotal ?? (Number(owner.urgentOpen || 0) + Number(owner.normalOpen || 0)));
 }
@@ -488,7 +678,7 @@ function renderDefects(options = {}) {
   defects = defects.filter((defect) => isConfiguredPersonDefect(defect, state.defectListMode));
   if (priority === "urgent") defects = defects.filter((defect) => ["1", "2"].includes(String(defect.priority)));
   if (priority === "normal") defects = defects.filter((defect) => !["1", "2"].includes(String(defect.priority)));
-  if (!hasGuestOwnerScope() && state.ownerFilters.length) defects = defects.filter((defect) => matchesOwnerFilters(defect, state.defectListMode));
+  if (!hasOwnerScope() && state.ownerFilters.length) defects = defects.filter((defect) => matchesOwnerFilters(defect, state.defectListMode));
   defects = applyDefectListMode(defects, state.defectListMode);
   defects = applyStatusFilter(defects, status);
   defects = applyOpenedAgeFilter(defects, openedAge);
@@ -599,7 +789,7 @@ function getDefectConditionText() {
     ownerTodayReturned: "负责人统计 / 今日转入",
     ownerTodayResolved: "负责人统计 / 今日解决"
   };
-  const ownerText = !hasGuestOwnerScope() && state.ownerFilters.length ? ` · ${state.ownerFilters.join("、")}` : "";
+  const ownerText = !hasOwnerScope() && state.ownerFilters.length ? ` · ${state.ownerFilters.join("、")}` : "";
   return `当前条件：${modeLabels[state.defectListMode] || "自定义条件"}${ownerText}`;
 }
 
@@ -764,7 +954,7 @@ function applyDefectRouteParams() {
   document.getElementById("statusFilter").value = status;
   document.getElementById("openedAgeFilter").value = openedAge;
   document.getElementById("defectSort").value = sort;
-  state.ownerFilters = hasGuestOwnerScope() ? [] : splitRouteList(params.get("owners"));
+  state.ownerFilters = hasOwnerScope() ? [] : splitRouteList(params.get("owners"));
 }
 
 function getValidParam(value, allowed, fallback) {
@@ -782,8 +972,8 @@ function buildDefectRoute() {
   params.set("status", document.getElementById("statusFilter").value || "active");
   params.set("openedAge", document.getElementById("openedAgeFilter").value || "all");
   params.set("sort", document.getElementById("defectSort").value || "priorityHigh");
-  if (!hasGuestOwnerScope() && state.ownerFilters.length) params.set("owners", state.ownerFilters.join(","));
-  return `${viewRoutes.defects}?${params.toString()}`;
+  if (!hasOwnerScope() && state.ownerFilters.length) params.set("owners", state.ownerFilters.join(","));
+  return `${getScopedViewRoute("defects")}?${params.toString()}`;
 }
 
 function updateDefectRoute(replace = false) {
@@ -839,8 +1029,8 @@ async function copyText(text) {
 function renderOwnerFilterOptions() {
   const wrapper = document.getElementById("ownerMultiSelect");
   const menu = document.getElementById("ownerFilterMenu");
-  wrapper.classList.toggle("hidden", hasGuestOwnerScope());
-  if (hasGuestOwnerScope()) {
+  wrapper.classList.toggle("hidden", hasOwnerScope());
+  if (hasOwnerScope()) {
     state.ownerFilters = [];
     menu.innerHTML = "";
     updateOwnerFilterLabel();
@@ -924,7 +1114,7 @@ function openDefectList(mode) {
 
 function openOwnerDefectList(mode, owner) {
   state.defectListMode = mode;
-  state.ownerFilters = hasGuestOwnerScope() ? [] : (owner ? [owner] : []);
+  state.ownerFilters = hasOwnerScope() ? [] : (owner ? [owner] : []);
   updateOwnerFilterLabel();
   const priorityFilter = document.getElementById("priorityFilter");
   const statusFilter = document.getElementById("statusFilter");
@@ -1465,6 +1655,7 @@ function formatPersonDisplayName(value) {
 function renderCell(value) {
   const text = String(value ?? "");
   if (text.startsWith("<span class=\"table-badge") || text.startsWith("<span class=\"ellipsis-cell") || text.startsWith("<a class=\"ellipsis-cell")) return text;
+  if (text.startsWith("<a class=\"owner-guest-link")) return text;
   if (text.trim().startsWith("<div class=\"owner-cell")) return text;
   if (text.startsWith("<button class=\"owner-stat-link")) return text;
   return escapeHtml(text);
@@ -1822,7 +2013,7 @@ function isReactivatedByTestToFrontendDefect(defect) {
 
 function isFrontendResolvedDefect(defect) {
   return ["resolved", "closed"].includes(normalizeStatus(defect.status))
-    && isResolvedByConfiguredOwnerToTest(defect);
+    && isFrontendOwner(getResolverName(defect));
 }
 
 function isResolvedByConfiguredOwnerToTest(defect) {
