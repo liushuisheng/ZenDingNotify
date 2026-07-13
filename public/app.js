@@ -12,6 +12,11 @@ const state = {
   fetching: false,
   view: "overview",
   ownerScope: "",
+  guestKnownDefectIds: null,
+  guestNotificationTestShown: false,
+  titleScrollTimer: null,
+  originalTitle: document.title,
+  activeGuestNotificationCount: 0,
   authenticated: false
 };
 
@@ -380,7 +385,7 @@ async function navigateHomeFromBrand() {
   }
 }
 
-async function loadAll() {
+async function loadAll(options = {}) {
   const [overview, defects, status, assignees, configData, logs] = await Promise.all([
     getJson(scopedApiUrl("/api/overview")),
     getJson(scopedApiUrl("/api/defects")),
@@ -391,6 +396,7 @@ async function loadAll() {
   ]);
   state.overview = overview;
   state.defects = defects.defects;
+  await notifyGuestOwnerNewDefects(defects.defects, Boolean(options.notifyGuestNewDefects));
   state.logs = logs.logs;
   state.assignees = assignees.assignees || [];
   state.config = configData.config;
@@ -404,6 +410,7 @@ async function loadAll() {
     renderLogs();
     renderConfig();
   }
+  maybeShowGuestNotificationTest();
 }
 
 function scopedApiUrl(path) {
@@ -411,6 +418,169 @@ function scopedApiUrl(path) {
   if (!owner) return path;
   const params = new URLSearchParams({ owner });
   return `${path}?${params.toString()}`;
+}
+
+async function notifyGuestOwnerNewDefects(defects, shouldNotify) {
+  if (!hasGuestOwnerScope()) return;
+  const currentIds = new Set((defects || []).map((defect) => String(defect.id)).filter(Boolean));
+  if (!state.guestKnownDefectIds) {
+    state.guestKnownDefectIds = currentIds;
+    return;
+  }
+
+  const newDefects = (defects || []).filter((defect) => defect.id && !state.guestKnownDefectIds.has(String(defect.id)));
+  state.guestKnownDefectIds = currentIds;
+  if (!shouldNotify || !newDefects.length) return;
+
+  showGuestDefectNotificationCards(newDefects);
+  startNewDefectTitleScroll(newDefects.length);
+  await showGuestBrowserNotification(newDefects);
+}
+
+function maybeShowGuestNotificationTest() {
+  if (!hasGuestOwnerScope() || state.guestNotificationTestShown) return;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("testNewDefect") !== "1") return;
+  state.guestNotificationTestShown = true;
+  const testDefects = Array.from({ length: 5 }, (_, index) => {
+    const id = `TEST-${index + 1}`;
+    const now = new Date(Date.now() - index * 1000).toISOString();
+    return {
+      id,
+      title: `测试新缺陷 ${index + 1}：通知卡片样式预览`,
+      priority: index < 2 ? "1" : "3",
+      status: "active",
+      transferAt: index < 3 ? now : "",
+      transferTo: index < 3 ? formatGuestOwnerDisplay(guestOwner) : "",
+      assignedTo: formatGuestOwnerDisplay(guestOwner),
+      openedBy: "测试创建人",
+      openedDate: now,
+      url: `http://zantao.landray.com.cn:8090/zentao/bug-view-${id}.html`
+    };
+  });
+  showGuestDefectNotificationCards(testDefects);
+  startNewDefectTitleScroll(testDefects.length);
+  showGuestBrowserNotification(testDefects);
+}
+
+function showGuestDefectNotificationCards(defects) {
+  const stack = document.getElementById("guestNotificationStack");
+  if (!stack) return;
+  const sortedDefects = sortNotificationDefects(defects).slice(0, 6);
+  state.activeGuestNotificationCount += sortedDefects.length;
+  sortedDefects.reverse().forEach((defect) => {
+    const timeMeta = getNotificationDefectTimeMeta(defect);
+    const personMeta = getNotificationDefectPersonMeta(defect);
+    const card = document.createElement("article");
+    card.className = `guest-defect-notification ${["1", "2"].includes(String(defect.priority)) ? "urgent" : ""}`;
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-label", `查看缺陷 #${defect.id}`);
+    card.innerHTML = `
+      <button type="button" class="guest-notification-close" aria-label="关闭通知">×</button>
+      <div class="guest-notification-head">
+        <span class="guest-notification-kicker">新缺陷提醒</span>
+        <span class="guest-notification-id">#${escapeHtml(defect.id)}</span>
+      </div>
+      <div class="guest-notification-title">${escapeHtml(defect.title || "未命名缺陷")}</div>
+      <div class="guest-notification-meta">
+        <span class="${["1", "2"].includes(String(defect.priority)) ? "urgent" : ""}">P${escapeHtml(defect.priority || "-")}</span>
+        ${timeMeta ? `<span class="has-tooltip" data-tooltip="${escapeHtml(timeMeta.title)}">${escapeHtml(timeMeta.text)}</span>` : ""}
+        ${personMeta ? `<span class="has-tooltip" data-tooltip="${escapeHtml(personMeta.title)}">${escapeHtml(personMeta.text)}</span>` : ""}
+      </div>
+    `;
+    card.addEventListener("click", (event) => {
+      if (event.target.closest(".guest-notification-close")) return;
+      if (defect.url) window.open(defect.url, "_blank", "noopener");
+    });
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      if (defect.url) window.open(defect.url, "_blank", "noopener");
+    });
+    card.querySelector(".guest-notification-close").addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeGuestDefectNotification(card);
+    });
+    stack.prepend(card);
+  });
+}
+
+function getNotificationDefectTimeMeta(defect) {
+  const transferredAt = defect.transferAt || defect.assignedAt || "";
+  if (transferredAt) return { text: formatCompactTime(transferredAt), title: "转入时间" };
+  if (defect.openedDate) return { text: formatCompactTime(defect.openedDate), title: "创建时间" };
+  return null;
+}
+
+function getNotificationDefectPersonMeta(defect) {
+  const transferredAt = defect.transferAt || defect.assignedAt || "";
+  if (transferredAt) return { text: formatPersonDisplayName(defect.transferTo || defect.assignedTo || guestOwner), title: "转入人" };
+  if (defect.openedBy) return { text: formatPersonDisplayName(defect.openedBy), title: "创建人" };
+  return null;
+}
+
+function sortNotificationDefects(defects) {
+  return [...(defects || [])].sort((left, right) => {
+    const priorityDiff = priorityValue(left.priority) - priorityValue(right.priority);
+    if (priorityDiff) return priorityDiff;
+    return Number(right.id || 0) - Number(left.id || 0);
+  });
+}
+
+function closeGuestDefectNotification(card) {
+  card.classList.add("closing");
+  window.setTimeout(() => {
+    card.remove();
+    state.activeGuestNotificationCount = Math.max(0, state.activeGuestNotificationCount - 1);
+    if (state.activeGuestNotificationCount === 0) stopNewDefectTitleScroll();
+  }, 220);
+}
+
+async function showGuestBrowserNotification(defects) {
+  if (!("Notification" in window) || !defects.length) return false;
+  try {
+    let permission = Notification.permission;
+    if (permission === "default") permission = await Notification.requestPermission();
+    if (permission !== "granted") return false;
+
+    const first = defects[0];
+    const title = defects.length === 1 ? "有1个新缺陷" : `有${defects.length}个新缺陷`;
+    const body = `#${first.id} ${first.title || ""}`.trim();
+    const notification = new Notification(title, {
+      body,
+      tag: `zend-notify-${guestOwner}`,
+      renotify: true
+    });
+    notification.onclick = () => {
+      window.focus();
+      if (first.url) window.open(first.url, "_blank", "noopener");
+      notification.close();
+    };
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startNewDefectTitleScroll(count) {
+  if (!count) return;
+  window.clearInterval(state.titleScrollTimer);
+  const message = `有${count}个新缺陷`;
+  const separator = "   ";
+  const baseTitle = state.originalTitle || document.title || "禅道钉钉通知助手";
+  let text = `${message}${separator}${baseTitle}${separator}`;
+  document.title = text;
+  state.titleScrollTimer = window.setInterval(() => {
+    text = text.slice(1) + text[0];
+    document.title = text;
+  }, 420);
+}
+
+function stopNewDefectTitleScroll() {
+  window.clearInterval(state.titleScrollTimer);
+  state.titleScrollTimer = null;
+  document.title = state.originalTitle || "禅道钉钉通知助手";
 }
 
 async function refreshFromZentao() {
@@ -434,7 +604,7 @@ async function pollFetchStatus() {
     const status = await getJson("/api/config-status");
     const wasFetching = state.fetching;
     renderStatus(status);
-    if (wasFetching && !state.fetching) await loadAll();
+    if (wasFetching && !state.fetching) await loadAll({ notifyGuestNewDefects: true });
   } catch {
     // The next poll will recover; keep the current UI state meanwhile.
   }
