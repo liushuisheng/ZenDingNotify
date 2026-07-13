@@ -262,19 +262,21 @@ function renderOwnerScopeBadge() {
   if (!badge) return;
   const isAdmin = !guestMode && state.authenticated;
   const isScopedView = ["overview", "defects"].includes(state.view);
-  const shouldShow = isAdmin && (Boolean(state.ownerScope) ? isScopedView : state.view === "overview");
+  const activeOwner = getActiveOwnerScope();
+  const shouldShow = (isAdmin && (Boolean(state.ownerScope) ? isScopedView : state.view === "overview"))
+    || (guestMode && isScopedView);
   badge.classList.toggle("hidden", !shouldShow);
-  badge.classList.toggle("icon-only", shouldShow && !state.ownerScope);
+  badge.classList.toggle("icon-only", shouldShow && !activeOwner);
   badge.classList.remove("open");
   if (!shouldShow) {
     badge.innerHTML = "";
     return;
   }
 
-  const currentName = formatGuestOwnerDisplay(state.ownerScope);
+  const currentName = formatGuestOwnerDisplay(activeOwner);
   const options = getOwnerScopeSwitchOptions();
   badge.innerHTML = `
-    ${state.ownerScope ? `<span class="owner-scope-text">当前视角：${escapeHtml(currentName)}</span>` : ""}
+    ${activeOwner ? `<span class="owner-scope-text">当前视角：${escapeHtml(currentName)}</span>` : ""}
     <button class="owner-scope-switch" type="button" title="切换人员视角" aria-label="切换人员视角">
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M17 1l4 4-4 4" />
@@ -285,7 +287,7 @@ function renderOwnerScopeBadge() {
     </button>
     <div class="owner-scope-menu">
       ${options.map((option) => `
-        <button type="button" class="owner-scope-option ${option.account === state.ownerScope ? "active" : ""}" data-owner-scope="${escapeHtml(option.account)}">
+        <button type="button" class="owner-scope-option ${option.account === activeOwner ? "active" : ""}" data-owner-scope="${escapeHtml(option.account)}">
           ${escapeHtml(option.name)}
         </button>
       `).join("")}
@@ -298,8 +300,12 @@ function renderOwnerScopeBadge() {
   badge.querySelectorAll("[data-owner-scope]").forEach((button) => {
     button.addEventListener("click", () => {
       const nextOwner = button.dataset.ownerScope;
-      if (!nextOwner || nextOwner === state.ownerScope) {
+      if (!nextOwner || nextOwner === activeOwner) {
         badge.classList.remove("open");
+        return;
+      }
+      if (guestMode) {
+        window.location.href = `/guest/${encodeURIComponent(nextOwner)}${state.view === "defects" ? "#/defects" : ""}`;
         return;
       }
       window.location.hash = `#/${encodeURIComponent(nextOwner)}/${state.view || "overview"}`;
