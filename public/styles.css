@@ -955,6 +955,18 @@ body.guest-owner-mode .metrics {
   color: #475569;
 }
 
+.pill.pinned {
+  background: #eff6ff;
+  color: var(--primary-dark);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.pill.requirement {
+  background: #fffbeb;
+  color: #b45309;
+  box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.13);
+}
+
 .pill.fatal {
   background: #b42318;
   color: #fff;
@@ -1021,6 +1033,11 @@ body.guest-owner-mode .metrics {
   min-width: 0;
 }
 
+.defect-item.pinned {
+  border-color: rgba(37, 99, 235, 0.26);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
 .defect-item.urgent {
   background: linear-gradient(90deg, var(--danger-soft), #fff);
   border-color: #ffd8d8;
@@ -1042,6 +1059,53 @@ body.guest-owner-mode .metrics {
   overflow: hidden;
   white-space: nowrap;
   font-size: 15px;
+}
+
+.pin-defect-button,
+.requirement-defect-button {
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #cbd5e1;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.pin-defect-button {
+  margin-left: auto;
+}
+
+.pin-defect-button:hover,
+.pin-defect-button.active {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.requirement-defect-button:hover,
+.requirement-defect-button.active {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.pin-defect-button svg,
+.requirement-defect-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.pin-defect-button .pin-top-bar {
+  stroke-width: 2.8;
 }
 
 .defect-id {
@@ -1945,12 +2009,10 @@ tbody tr:hover {
   color: #dc2626;
 }
 
-.guest-notification-meta span.has-tooltip::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  z-index: 2;
-  left: 50%;
-  bottom: calc(100% + 7px);
+.global-tooltip {
+  position: fixed;
+  z-index: 300;
+  max-width: min(320px, calc(100vw - 24px));
   padding: 5px 8px;
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 6px;
@@ -1963,35 +2025,45 @@ tbody tr:hover {
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, 4px);
+  transform: translateY(4px);
   transition: opacity 0.14s ease, transform 0.14s ease;
 }
 
-.guest-notification-meta span.has-tooltip::before {
+.global-tooltip.title-tooltip {
+  max-width: min(720px, calc(100vw - 24px));
+  white-space: normal;
+  line-height: 1.45;
+  transition: none;
+}
+
+.global-tooltip::before {
   content: "";
   position: absolute;
-  z-index: 3;
   left: 50%;
-  bottom: calc(100% + 3px);
+  bottom: -4px;
   width: 7px;
   height: 7px;
   border-right: 1px solid rgba(148, 163, 184, 0.2);
   border-bottom: 1px solid rgba(148, 163, 184, 0.2);
   background: rgba(255, 255, 255, 0.98);
-  opacity: 0;
-  pointer-events: none;
-  transform: translate(-50%, 4px) rotate(45deg);
-  transition: opacity 0.14s ease, transform 0.14s ease;
+  transform: translateX(-50%) rotate(45deg);
 }
 
-.guest-notification-meta span.has-tooltip:hover::after,
-.guest-notification-meta span.has-tooltip:hover::before {
+.global-tooltip.below::before {
+  top: -4px;
+  bottom: auto;
+  border: 0;
+  border-left: 1px solid rgba(148, 163, 184, 0.2);
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.global-tooltip.show {
   opacity: 1;
-  transform: translate(-50%, 0) rotate(0deg);
+  transform: translateY(0);
 }
 
-.guest-notification-meta span.has-tooltip:hover::before {
-  transform: translate(-50%, 0) rotate(45deg);
+.global-tooltip.title-tooltip.show {
+  transform: none;
 }
 
 .settings-form {

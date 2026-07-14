@@ -151,6 +151,8 @@ let fetchInFlight = null;
 const scheduledReportRunsInFlight = new Set();
 ensureAdminToken();
 store.defects = store.defects?.length ? store.defects : (config.zentao.enabled ? [] : sampleDefects);
+store.pinnedOverviewDefects = normalizePinnedDefectIds(store.pinnedOverviewDefects);
+store.requirementOverviewDefects = normalizeOverviewDefectIds(store.requirementOverviewDefects);
 await saveConfig();
 await saveStore();
 
@@ -212,6 +214,32 @@ async function route(req, res) {
       return;
     }
     sendJson(res, 200, buildOverview({ owner: ownerScope.owner }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/overview-pins") {
+    sendJson(res, 200, { pinned: getPinnedOverviewDefectIds() });
+    return;
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/overview-pins") {
+    const body = await readBodyJson(req);
+    store.pinnedOverviewDefects = normalizeOverviewDefectIds(body.pinned || body.ids);
+    await saveStore();
+    sendJson(res, 200, { ok: true, pinned: store.pinnedOverviewDefects });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/overview-requirements") {
+    sendJson(res, 200, { requirements: getRequirementOverviewDefectIds() });
+    return;
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/overview-requirements") {
+    const body = await readBodyJson(req);
+    store.requirementOverviewDefects = normalizeOverviewDefectIds(body.requirements || body.ids);
+    await saveStore();
+    sendJson(res, 200, { ok: true, requirements: store.requirementOverviewDefects });
     return;
   }
 
@@ -1901,6 +1929,8 @@ function isAdminRequest(req) {
 }
 
 function isPublicRequest(req, url) {
+  if (url.pathname === "/api/overview-pins" && ["GET", "PUT"].includes(req.method)) return true;
+  if (url.pathname === "/api/overview-requirements" && ["GET", "PUT"].includes(req.method)) return true;
   if (req.method !== "GET") return false;
   if (url.pathname === "/" || url.pathname === "/index.html") return true;
   if (isGuestRoutePath(url.pathname)) return true;
@@ -2081,7 +2111,26 @@ async function saveStore() {
 }
 
 function defaultStore() {
-  return { defects: [], pushLogs: [], jobRuns: [], lastScheduledRun: {}, fetchSync: { assignees: [], assigneeWatermarks: {}, lastFetchAt: "" } };
+  return { defects: [], pushLogs: [], jobRuns: [], lastScheduledRun: {}, pinnedOverviewDefects: [], requirementOverviewDefects: [], fetchSync: { assignees: [], assigneeWatermarks: {}, lastFetchAt: "" } };
+}
+
+function normalizePinnedDefectIds(value) {
+  return normalizeOverviewDefectIds(value);
+}
+
+function normalizeOverviewDefectIds(value) {
+  const ids = Array.isArray(value) ? value : [];
+  return [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))];
+}
+
+function getPinnedOverviewDefectIds() {
+  store.pinnedOverviewDefects = normalizePinnedDefectIds(store.pinnedOverviewDefects);
+  return store.pinnedOverviewDefects;
+}
+
+function getRequirementOverviewDefectIds() {
+  store.requirementOverviewDefects = normalizeOverviewDefectIds(store.requirementOverviewDefects);
+  return store.requirementOverviewDefects;
 }
 
 function getTodayRange() {

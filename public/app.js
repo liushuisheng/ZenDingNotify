@@ -12,6 +12,8 @@ const state = {
   fetching: false,
   view: "overview",
   ownerScope: "",
+  pinnedOverviewDefects: new Set(),
+  requirementOverviewDefects: new Set(),
   guestKnownDefectIds: null,
   guestNotificationTestShown: false,
   titleScrollTimer: null,
@@ -180,8 +182,71 @@ document.querySelectorAll(".action-card").forEach((button) => {
   });
 });
 
+initGlobalTooltips();
 initApp();
 setInterval(pollFetchStatus, 3000);
+
+function initGlobalTooltips() {
+  const tooltip = document.createElement("div");
+  tooltip.className = "global-tooltip";
+  document.body.appendChild(tooltip);
+  let activeTarget = null;
+
+  const isTitleTooltipTarget = (target) => Boolean(target.closest?.(".defect-title, .defect-title-text, .title-link"));
+  const getTooltipTarget = (target) => target?.closest?.("[data-tooltip], [title]");
+  const normalizeTooltipTarget = (target) => {
+    if (!target) return "";
+    if (!target.dataset.tooltip && target.getAttribute("title")) {
+      target.dataset.tooltip = target.getAttribute("title");
+      target.removeAttribute("title");
+    }
+    return target.dataset.tooltip || "";
+  };
+  const show = (target) => {
+    const text = normalizeTooltipTarget(target);
+    if (!text) return;
+    activeTarget = target;
+    tooltip.textContent = text;
+    tooltip.classList.toggle("title-tooltip", isTitleTooltipTarget(target));
+    tooltip.classList.add("show");
+    positionGlobalTooltip(tooltip, target);
+  };
+  const hide = (target) => {
+    if (target && activeTarget !== target) return;
+    activeTarget = null;
+    tooltip.classList.remove("show");
+  };
+
+  document.addEventListener("mouseover", (event) => {
+    const target = getTooltipTarget(event.target);
+    if (!target || target.contains(event.relatedTarget)) return;
+    show(target);
+  });
+  document.addEventListener("mouseout", (event) => {
+    const target = getTooltipTarget(event.target);
+    if (!target || target.contains(event.relatedTarget)) return;
+    hide(target);
+  });
+  document.addEventListener("focusin", (event) => show(getTooltipTarget(event.target)));
+  document.addEventListener("focusout", (event) => hide(getTooltipTarget(event.target)));
+  window.addEventListener("scroll", () => activeTarget && positionGlobalTooltip(tooltip, activeTarget), true);
+  window.addEventListener("resize", () => activeTarget && positionGlobalTooltip(tooltip, activeTarget));
+}
+
+function positionGlobalTooltip(tooltip, target) {
+  const rect = target.getBoundingClientRect();
+  const gap = 8;
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const left = Math.min(
+    Math.max(8, rect.left + rect.width / 2 - tooltipRect.width / 2),
+    window.innerWidth - tooltipRect.width - 8
+  );
+  const top = rect.top - tooltipRect.height - gap;
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${Math.max(8, top)}px`;
+  tooltip.classList.toggle("below", top < 8);
+  if (top < 8) tooltip.style.top = `${rect.bottom + gap}px`;
+}
 
 async function initApp() {
   if (guestMode) {
@@ -386,16 +451,20 @@ async function navigateHomeFromBrand() {
 }
 
 async function loadAll(options = {}) {
-  const [overview, defects, status, assignees, configData, logs] = await Promise.all([
+  const [overview, defects, status, assignees, configData, logs, overviewPins, overviewRequirements] = await Promise.all([
     getJson(scopedApiUrl("/api/overview")),
     getJson(scopedApiUrl("/api/defects")),
     getJson("/api/config-status"),
     guestMode ? Promise.resolve({ assignees: [] }) : getJson("/api/assignees"),
     getJson(guestMode ? "/api/public-config" : "/api/config"),
-    guestMode ? Promise.resolve({ logs: [] }) : getJson("/api/push-logs")
+    guestMode ? Promise.resolve({ logs: [] }) : getJson("/api/push-logs"),
+    getJson("/api/overview-pins"),
+    getJson("/api/overview-requirements")
   ]);
   state.overview = overview;
   state.defects = defects.defects;
+  state.pinnedOverviewDefects = new Set((overviewPins.pinned || []).map((id) => String(id)));
+  state.requirementOverviewDefects = new Set((overviewRequirements.requirements || []).map((id) => String(id)));
   await notifyGuestOwnerNewDefects(defects.defects, Boolean(options.notifyGuestNewDefects));
   state.logs = logs.logs;
   state.assignees = assignees.assignees || [];
@@ -729,10 +798,24 @@ function renderOverview() {
     button.addEventListener("click", () => openDefectList(button.dataset.defectMode));
   });
 
-  document.getElementById("urgentList").innerHTML = renderDefectCards(sortDefectsForDisplay(overview.urgentOpen), true);
-  document.getElementById("normalList").innerHTML = renderDefectCards(sortDefectsForDisplay(overview.normalOpen), false);
+  document.getElementById("urgentList").innerHTML = renderDefectCards(sortPinnedDefectCards(sortDefectsForDisplay(overview.urgentOpen)), true);
+  document.getElementById("normalList").innerHTML = renderDefectCards(sortPinnedDefectCards(sortDefectsForDisplay(overview.normalOpen)), false);
   document.getElementById("urgentCount").textContent = overview.urgentOpen.length;
   document.getElementById("normalCount").textContent = overview.normalOpen.length;
+  document.querySelectorAll("[data-pin-defect]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleOverviewDefectPin(button.dataset.pinDefect);
+    });
+  });
+  document.querySelectorAll("[data-requirement-defect]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleOverviewDefectRequirement(button.dataset.requirementDefect);
+    });
+  });
 
   const ownerStatsPanel = document.querySelector(".owner-stats-panel");
   ownerStatsPanel?.classList.toggle("hidden", hasOwnerScope());
@@ -789,13 +872,34 @@ function renderDefectCards(defects, urgent) {
   if (!defects.length) return `<div class="empty">暂无数据</div>`;
   return defects.map((defect) => {
     const ageLabel = getOpenedAgeLabel(defect.openedDate);
+    const pinned = isOverviewDefectPinned(defect.id);
+    const requirement = isOverviewDefectRequirement(defect.id);
     return `
-    <article class="defect-item ${urgent ? "urgent" : ""} ${isFatal(defect) ? "fatal" : ""} ${ageLabel === "超期" ? "overdue" : ""}">
+    <article class="defect-item ${urgent ? "urgent" : ""} ${isFatal(defect) ? "fatal" : ""} ${ageLabel === "超期" ? "overdue" : ""} ${pinned ? "pinned" : ""}">
       <div class="defect-title" title="#${escapeHtml(defect.id)} ${escapeHtml(defect.title)}">
         <span class="defect-id">#${escapeHtml(defect.id)}</span>
         <a class="defect-title-text" href="${escapeHtml(defect.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(defect.title)}</a>
+        <button class="pin-defect-button ${pinned ? "active" : ""}" type="button" data-pin-defect="${escapeHtml(defect.id)}" title="${pinned ? "取消置顶" : "置顶"}" aria-label="${pinned ? "取消置顶" : "置顶"}">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path class="pin-top-bar" d="M6 4h12" />
+            <path class="pin-top-arrow" d="M12 19V8" />
+            <path class="pin-top-arrow" d="M7.5 12.5L12 8l4.5 4.5" />
+          </svg>
+        </button>
+        <button class="requirement-defect-button ${requirement ? "active" : ""}" type="button" data-requirement-defect="${escapeHtml(defect.id)}" title="${requirement ? "取消需求标记" : "标记为需求"}" aria-label="${requirement ? "取消需求标记" : "标记为需求"}">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 12v7a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19V5a1.5 1.5 0 0 1 1.5-1.5H14" />
+            <path d="M8 8h5" />
+            <path d="M8 12h8" />
+            <path d="M8 16h6" />
+            <path d="M16 4.5h4v4" />
+            <path d="M14.5 10 20 4.5" />
+          </svg>
+        </button>
       </div>
       <div class="meta">
+        ${pinned ? `<span class="pill pinned">置顶</span>` : ""}
+        ${requirement ? `<span class="pill requirement">需求</span>` : ""}
         ${isFatal(defect) ? `<span class="pill fatal">致命</span>` : ""}
         ${renderNewPendingPill(defect)}
         ${isReactivatedByTestToFrontendDefect(defect) ? `<span class="pill reactivated">重新激活</span>` : ""}
@@ -806,6 +910,78 @@ function renderDefectCards(defects, urgent) {
     </article>
   `;
   }).join("");
+}
+
+function sortPinnedDefectCards(defects) {
+  return [...defects].sort((left, right) => {
+    const pinnedDiff = Number(isOverviewDefectPinned(right.id)) - Number(isOverviewDefectPinned(left.id));
+    if (pinnedDiff) return pinnedDiff;
+    return 0;
+  });
+}
+
+function isOverviewDefectPinned(id) {
+  return state.pinnedOverviewDefects.has(String(id));
+}
+
+function isOverviewDefectRequirement(id) {
+  return state.requirementOverviewDefects.has(String(id));
+}
+
+async function toggleOverviewDefectPin(id) {
+  const key = String(id || "");
+  if (!key) return;
+  const previousPinned = new Set(state.pinnedOverviewDefects);
+  if (state.pinnedOverviewDefects.has(key)) state.pinnedOverviewDefects.delete(key);
+  else state.pinnedOverviewDefects.add(key);
+  renderOverview();
+  try {
+    await saveOverviewPins();
+  } catch (error) {
+    state.pinnedOverviewDefects = previousPinned;
+    renderOverview();
+    showToast(error.message || "置顶保存失败", "error");
+  }
+}
+
+async function saveOverviewPins() {
+  const response = await fetch("/api/overview-pins", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pinned: [...state.pinnedOverviewDefects] })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) throw new Error(data.message || data.error || "置顶保存失败");
+  state.pinnedOverviewDefects = new Set((data.pinned || []).map((id) => String(id)));
+}
+
+async function toggleOverviewDefectRequirement(id) {
+  const key = String(id || "");
+  if (!key) return;
+  const removing = state.requirementOverviewDefects.has(key);
+  if (removing && !window.confirm(`确认取消 #${key} 的需求标记吗？`)) return;
+  const previousRequirements = new Set(state.requirementOverviewDefects);
+  if (removing) state.requirementOverviewDefects.delete(key);
+  else state.requirementOverviewDefects.add(key);
+  renderOverview();
+  try {
+    await saveOverviewRequirements();
+  } catch (error) {
+    state.requirementOverviewDefects = previousRequirements;
+    renderOverview();
+    showToast(error.message || "需求标记保存失败", "error");
+  }
+}
+
+async function saveOverviewRequirements() {
+  const response = await fetch("/api/overview-requirements", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ requirements: [...state.requirementOverviewDefects] })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) throw new Error(data.message || data.error || "需求标记保存失败");
+  state.requirementOverviewDefects = new Set((data.requirements || []).map((id) => String(id)));
 }
 
 function ownerStatButton(owner, mode, value) {
@@ -2069,8 +2245,7 @@ function renderNewPendingPill(defect) {
 function renderAgePill(defect, ageLabel) {
   if (!ageLabel) return "";
   const className = `pill age ${ageLabel === "超期" ? "overdue" : ""}`.trim();
-  const title = ageLabel === "超期" ? ` title="${escapeHtml(getPendingTimeTooltip(defect))}"` : "";
-  return `<span class="${className}"${title}>${ageLabel}</span>`;
+  return `<span class="${className}" data-tooltip="${escapeHtml(getPendingTimeTooltip(defect))}">${ageLabel}</span>`;
 }
 
 function getPendingTimeTooltip(defect) {
