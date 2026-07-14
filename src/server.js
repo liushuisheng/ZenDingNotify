@@ -784,17 +784,20 @@ function buildOverview(options = {}) {
   const visibleOpen = open.filter(isVisibleOpenOverviewDefect);
   const urgentOpen = visibleOpen.filter(isUrgentDefect);
   const normalOpen = visibleOpen.filter((defect) => !isUrgentDefect(defect));
+  const ownerScope = normalizeAssigneeName(options.owner);
   const todayAdded = defects.filter((defect) => isInRange(defect.openedDate, today));
+  const todayAddedForStats = ownerScope
+    ? todayAdded
+    : uniqueDefects([...todayAdded, ...defects.filter((defect) => isTodayIncomingTransferToConfiguredDefect(defect, today))]);
   const todayResolved = defects.filter((defect) => isFrontendResolvedDefect(defect) && isInRange(getDeveloperResolvedAt(defect), today));
   const todayClosed = defects.filter((defect) => isFrontendClosedDefect(defect) && isInRange(defect.closedDate, today));
   const resolvedPendingVerify = defects.filter(isResolvedPendingVerifyDefect);
-  const ownerScope = normalizeAssigneeName(options.owner);
   const owners = groupByOwner(defects, open, todayAdded, todayResolved)
     .filter((owner) => !ownerScope || namesEqual(owner.account, ownerScope) || namesEqual(owner.name, ownerScope));
 
   return {
     stats: {
-      todayAdded: todayAdded.length,
+      todayAdded: todayAddedForStats.length,
       todayResolved: todayResolved.length,
       todayClosed: todayClosed.length,
       openTotal: visibleOpen.length,
@@ -1000,7 +1003,7 @@ function isDefectOwnedByConfiguredAssignee(defect, assignees) {
     return assignees.includes(normalizeAssigneeName(defect.assignedFrom));
   }
   if (isTodayTransferredDefect(defect)) {
-    return assignees.includes(normalizeAssigneeName(getTransferFrom(defect)));
+    return [getTransferFrom(defect), getTransferTo(defect)].some((value) => assignees.includes(normalizeAssigneeName(value)));
   }
   if (isTodayInitiallyAssignedDefect(defect)) {
     return assignees.includes(normalizeAssigneeName(getInitialAssignedTo(defect)));
@@ -1556,7 +1559,7 @@ function isConfiguredPersonDefect(defect) {
     return configured.some((assignee) => namesEqual(defect.assignedFrom, assignee));
   }
   if (isTodayTransferredDefect(defect)) {
-    return configured.some((assignee) => namesEqual(getTransferFrom(defect), assignee));
+    return configured.some((assignee) => [getTransferFrom(defect), getTransferTo(defect)].some((value) => namesEqual(value, assignee)));
   }
   return configured.some((assignee) => namesEqual(defect.assignedTo, assignee));
 }
@@ -1650,6 +1653,25 @@ function isTodayTransferredDefect(defect) {
     && !namesEqual(getTransferFrom(defect), getTransferTo(defect))
     && isToday(getTransferAt(defect))
     && !isResolvedByTransferAction(defect);
+}
+
+function isTodayIncomingTransferToConfiguredDefect(defect, range = getTodayRange()) {
+  return Boolean(getTransferFrom(defect))
+    && Boolean(getTransferTo(defect))
+    && !namesEqual(getTransferFrom(defect), getTransferTo(defect))
+    && isInRange(getTransferAt(defect), range)
+    && isFrontendOwner(getTransferTo(defect))
+    && !isResolvedByTransferAction(defect);
+}
+
+function uniqueDefects(defects) {
+  const seen = new Set();
+  return defects.filter((defect) => {
+    const key = String(defect.id || "");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function isResolvedByTransferAction(defect) {

@@ -1658,6 +1658,89 @@ tbody tr:hover {
   box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
 }
 
+.confirm-backdrop {
+  z-index: 110;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.confirm-panel {
+  width: min(390px, calc(100vw - 32px));
+  max-height: none;
+  display: grid;
+  grid-template-columns: 42px 1fr;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 22px 54px rgba(15, 23, 42, 0.22);
+}
+
+.confirm-icon {
+  width: 36px;
+  height: 36px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #fff7ed;
+  color: #ea580c;
+  font-size: 19px;
+  font-weight: 900;
+}
+
+.confirm-content {
+  min-width: 0;
+}
+
+.confirm-content strong {
+  display: block;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.confirm-content p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.ghost-button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 13px;
+  background: #fff;
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ghost-button:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.danger-button {
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 13px;
+  background: #dc2626;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.danger-button:hover {
+  background: #b91c1c;
+}
+
 .modal-head {
   display: flex;
   align-items: flex-start;

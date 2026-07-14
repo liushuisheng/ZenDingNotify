@@ -103,7 +103,10 @@ document.querySelectorAll(".nav-item").forEach((button) => {
 window.addEventListener("hashchange", handleRouteChange);
 window.addEventListener("popstate", handleRouteChange);
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeLogModal();
+  if (event.key === "Escape") {
+    closeConfirmModal(false);
+    closeLogModal();
+  }
 });
 
 async function handleRouteChange() {
@@ -139,6 +142,11 @@ document.getElementById("closeLogModal").addEventListener("click", closeLogModal
 document.getElementById("logModal").addEventListener("click", (event) => {
   if (event.target.id === "logModal") closeLogModal();
 });
+document.getElementById("confirmModal").addEventListener("click", (event) => {
+  if (event.target.id === "confirmModal") closeConfirmModal(false);
+});
+document.getElementById("cancelConfirmModal").addEventListener("click", () => closeConfirmModal(false));
+document.getElementById("confirmConfirmModal").addEventListener("click", () => closeConfirmModal(true));
 document.getElementById("ownerFilterTrigger").addEventListener("click", () => {
   if (hasOwnerScope()) return;
   document.getElementById("ownerMultiSelect").classList.toggle("open");
@@ -192,7 +200,7 @@ function initGlobalTooltips() {
   document.body.appendChild(tooltip);
   let activeTarget = null;
 
-  const isTitleTooltipTarget = (target) => Boolean(target.closest?.(".defect-title, .defect-title-text, .title-link"));
+  const isTitleTooltipTarget = (target) => Boolean(target.closest?.(".defect-title-text, .title-link"));
   const getTooltipTarget = (target) => target?.closest?.("[data-tooltip], [title]");
   const normalizeTooltipTarget = (target) => {
     if (!target) return "";
@@ -203,6 +211,7 @@ function initGlobalTooltips() {
     return target.dataset.tooltip || "";
   };
   const show = (target) => {
+    if (isTitleTooltipTarget(target) && !isTextTruncated(target)) return;
     const text = normalizeTooltipTarget(target);
     if (!text) return;
     activeTarget = target;
@@ -246,6 +255,10 @@ function positionGlobalTooltip(tooltip, target) {
   tooltip.style.top = `${Math.max(8, top)}px`;
   tooltip.classList.toggle("below", top < 8);
   if (top < 8) tooltip.style.top = `${rect.bottom + gap}px`;
+}
+
+function isTextTruncated(element) {
+  return element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1;
 }
 
 async function initApp() {
@@ -788,7 +801,7 @@ function renderOverview() {
   const metrics = getOverviewMetrics(overview);
 
   document.getElementById("metrics").innerHTML = metrics.map(([label, value, tone, mode]) => `
-    <button class="metric ${tone}" type="button" data-defect-mode="${mode}" title="查看${label}缺陷">
+    <button class="metric ${tone}" type="button" data-defect-mode="${mode}">
       <span class="metric-label">${label}</span>
       <strong>${value}</strong>
       <span class="metric-foot">${metricFoot(label)}</span>
@@ -876,9 +889,9 @@ function renderDefectCards(defects, urgent) {
     const requirement = isOverviewDefectRequirement(defect.id);
     return `
     <article class="defect-item ${urgent ? "urgent" : ""} ${isFatal(defect) ? "fatal" : ""} ${ageLabel === "超期" ? "overdue" : ""} ${pinned ? "pinned" : ""}">
-      <div class="defect-title" title="#${escapeHtml(defect.id)} ${escapeHtml(defect.title)}">
+      <div class="defect-title">
         <span class="defect-id">#${escapeHtml(defect.id)}</span>
-        <a class="defect-title-text" href="${escapeHtml(defect.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(defect.title)}</a>
+        <a class="defect-title-text" href="${escapeHtml(defect.url || "#")}" target="_blank" rel="noreferrer" title="#${escapeHtml(defect.id)} ${escapeHtml(defect.title)}">${escapeHtml(defect.title)}</a>
         <button class="pin-defect-button ${pinned ? "active" : ""}" type="button" data-pin-defect="${escapeHtml(defect.id)}" title="${pinned ? "取消置顶" : "置顶"}" aria-label="${pinned ? "取消置顶" : "置顶"}">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path class="pin-top-bar" d="M6 4h12" />
@@ -959,7 +972,14 @@ async function toggleOverviewDefectRequirement(id) {
   const key = String(id || "");
   if (!key) return;
   const removing = state.requirementOverviewDefects.has(key);
-  if (removing && !window.confirm(`确认取消 #${key} 的需求标记吗？`)) return;
+  if (removing) {
+    const confirmed = await requestConfirm({
+      title: "取消需求标记",
+      message: `确认取消 #${key} 的需求标记吗？取消后该缺陷不再显示“需求”标签。`,
+      confirmText: "确认取消"
+    });
+    if (!confirmed) return;
+  }
   const previousRequirements = new Set(state.requirementOverviewDefects);
   if (removing) state.requirementOverviewDefects.delete(key);
   else state.requirementOverviewDefects.add(key);
@@ -1189,6 +1209,9 @@ function ownerCell(defect, mode) {
 
 function getOwnerTransferNote(defect, mode) {
   if (mode !== "todayAdded") return "";
+  if (shouldIncludeIncomingTransfersInTodayAdded() && isTodayIncomingTransferToConfiguredDefect(defect)) {
+    return `【由${formatPersonDisplayName(getTransferFrom(defect))}转入】`;
+  }
   if (!isTodayTransferredDefect(defect)) return "";
   if (!isFrontendOwner(defect.assignedFrom)) return "";
   return `【由${formatPersonDisplayName(defect.assignedFrom)}转入】`;
@@ -1226,8 +1249,8 @@ function isConfiguredPersonDefect(defect, mode) {
   if (mode === "ownerTodayTransferred" && isTodayTransferredDefect(defect)) {
     return configured.some((assignee) => namesMatch(getTransferFrom(defect), assignee));
   }
-  if (mode === "todayAdded" && isTodayTransferredDefect(defect)) {
-    return configured.some((assignee) => namesMatch(getTransferFrom(defect), assignee));
+  if (mode === "todayAdded" && isTodayInitiallyAssignedDefect(defect)) {
+    return configured.some((assignee) => namesMatch(getInitialAssignedTo(defect), assignee));
   }
   if (mode === "ownerTodayReturned" && isTodayReturnedDefect(defect)) {
     return configured.some((assignee) => namesMatch(defect.assignedTo, assignee));
@@ -1267,7 +1290,7 @@ function getModeDateColumn(mode, defects) {
 
 function getModeDate(defect, mode) {
   const map = {
-    todayAdded: () => defect.openedDate,
+    todayAdded: () => shouldIncludeIncomingTransfersInTodayAdded() ? getAdminTodayAddedAt(defect) : defect.openedDate,
     todayResolved: () => getDeveloperResolvedAt(defect) || getTerminalDate(defect),
     todayClosed: () => defect.closedDate,
     resolvedPendingVerify: () => getDeveloperResolvedAt(defect) || getTerminalDate(defect),
@@ -1491,7 +1514,7 @@ function applyOpenedAgeFilter(defects, openedAge) {
 }
 
 function applyDefectListMode(defects, mode) {
-  if (mode === "todayAdded") return defects.filter((defect) => isToday(defect.openedDate));
+  if (mode === "todayAdded") return defects.filter(shouldIncludeIncomingTransfersInTodayAdded() ? isAdminTodayAddedDefect : (defect) => isToday(defect.openedDate));
   if (mode === "todayResolved") return defects.filter((defect) => isFrontendResolvedDefect(defect) && isToday(getDeveloperResolvedAt(defect)));
   if (mode === "todayClosed") return defects.filter((defect) => isFrontendClosedDefect(defect) && isToday(defect.closedDate));
   if (mode === "open") return defects.filter(isVisibleOpenDefect);
@@ -1569,6 +1592,29 @@ function openLogModal(log) {
 
 function closeLogModal() {
   document.getElementById("logModal").classList.add("hidden");
+}
+
+let pendingConfirmResolve = null;
+function requestConfirm({ title, message, confirmText = "确认" }) {
+  const modal = document.getElementById("confirmModal");
+  document.getElementById("confirmModalTitle").textContent = title || "确认操作";
+  document.getElementById("confirmModalMessage").textContent = message || "确认继续吗？";
+  document.getElementById("confirmConfirmModal").textContent = confirmText;
+  modal.classList.remove("hidden");
+  document.getElementById("confirmConfirmModal").focus();
+  return new Promise((resolve) => {
+    pendingConfirmResolve = resolve;
+  });
+}
+
+function closeConfirmModal(confirmed) {
+  const modal = document.getElementById("confirmModal");
+  if (!modal || modal.classList.contains("hidden")) return;
+  modal.classList.add("hidden");
+  if (pendingConfirmResolve) {
+    pendingConfirmResolve(Boolean(confirmed));
+    pendingConfirmResolve = null;
+  }
 }
 
 function getRecentPushLogs() {
@@ -2310,6 +2356,29 @@ function isTodayTransferredDefect(defect) {
     && Boolean(getTransferTo(defect))
     && !namesMatch(getTransferFrom(defect), getTransferTo(defect))
     && isToday(getTransferAt(defect))
+    && !isResolvedByTransferAction(defect);
+}
+
+function shouldIncludeIncomingTransfersInTodayAdded() {
+  return !guestMode && !hasOwnerScope();
+}
+
+function isAdminTodayAddedDefect(defect) {
+  return isToday(defect.openedDate) || isTodayIncomingTransferToConfiguredDefect(defect);
+}
+
+function getAdminTodayAddedAt(defect) {
+  if (isToday(defect.openedDate)) return defect.openedDate;
+  if (isTodayIncomingTransferToConfiguredDefect(defect)) return getTransferAt(defect);
+  return "";
+}
+
+function isTodayIncomingTransferToConfiguredDefect(defect) {
+  return Boolean(getTransferFrom(defect))
+    && Boolean(getTransferTo(defect))
+    && !namesMatch(getTransferFrom(defect), getTransferTo(defect))
+    && isToday(getTransferAt(defect))
+    && isFrontendOwner(getTransferTo(defect))
     && !isResolvedByTransferAction(defect);
 }
 
