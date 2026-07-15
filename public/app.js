@@ -15,6 +15,7 @@ const state = {
   pinnedOverviewDefects: new Set(),
   requirementOverviewDefects: new Set(),
   guestKnownDefectIds: null,
+  notificationOwnerScope: "",
   guestNotificationTestShown: false,
   titleScrollTimer: null,
   originalTitle: document.title,
@@ -211,9 +212,9 @@ function initGlobalTooltips() {
     return target.dataset.tooltip || "";
   };
   const show = (target) => {
-    if (isTitleTooltipTarget(target) && !isTextTruncated(target)) return;
     const text = normalizeTooltipTarget(target);
     if (!text) return;
+    if (isTitleTooltipTarget(target) && !isTextTruncated(target)) return;
     activeTarget = target;
     tooltip.textContent = text;
     tooltip.classList.toggle("title-tooltip", isTitleTooltipTarget(target));
@@ -503,10 +504,16 @@ function scopedApiUrl(path) {
 }
 
 async function notifyGuestOwnerNewDefects(defects, shouldNotify) {
-  if (!hasGuestOwnerScope()) return;
+  if (!hasOwnerScope()) {
+    state.guestKnownDefectIds = null;
+    state.notificationOwnerScope = "";
+    return;
+  }
+  const ownerScope = getActiveOwnerScope();
   const currentIds = new Set((defects || []).map((defect) => String(defect.id)).filter(Boolean));
-  if (!state.guestKnownDefectIds) {
+  if (!state.guestKnownDefectIds || state.notificationOwnerScope !== ownerScope) {
     state.guestKnownDefectIds = currentIds;
+    state.notificationOwnerScope = ownerScope;
     return;
   }
 
@@ -631,7 +638,7 @@ async function showGuestBrowserNotification(defects) {
     const body = `#${first.id} ${first.title || ""}`.trim();
     const notification = new Notification(title, {
       body,
-      tag: `zend-notify-${guestOwner}`,
+      tag: `zend-notify-${getActiveOwnerScope() || "global"}`,
       renotify: true
     });
     notification.onclick = () => {
@@ -915,6 +922,7 @@ function renderDefectCards(defects, urgent) {
         ${requirement ? `<span class="pill requirement">需求</span>` : ""}
         ${isFatal(defect) ? `<span class="pill fatal">致命</span>` : ""}
         ${renderNewPendingPill(defect)}
+        ${renderTransferredInPill(defect)}
         ${isReactivatedByTestToFrontendDefect(defect) ? `<span class="pill reactivated">重新激活</span>` : ""}
         ${renderAgePill(defect, ageLabel)}
         <span class="pill ${urgent ? "urgent" : ""}">P${escapeHtml(defect.priority)}</span>
@@ -2280,12 +2288,17 @@ function isToday(value) {
 }
 
 function isNewPendingDefect(defect) {
-  return isWithinRecentHours(defect.openedDate, 4) || isRecentlyTransferredInDefect(defect);
+  return isWithinRecentHours(defect.openedDate, 4) && !isRecentlyTransferredInDefect(defect);
 }
 
 function renderNewPendingPill(defect) {
   if (!isNewPendingDefect(defect)) return "";
   return `<span class="pill new" title="${escapeHtml(getPendingTimeTooltip(defect))}">新</span>`;
+}
+
+function renderTransferredInPill(defect) {
+  if (!isRecentlyTransferredInDefect(defect)) return "";
+  return `<span class="pill transferred-in" data-tooltip="${escapeHtml(getPendingTimeTooltip(defect))}">转入</span>`;
 }
 
 function renderAgePill(defect, ageLabel) {
