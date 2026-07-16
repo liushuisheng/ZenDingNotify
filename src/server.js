@@ -11,6 +11,9 @@ const publicDir = path.join(rootDir, "public");
 const configPath = path.join(dataDir, "config.json");
 const storePath = path.join(dataDir, "store.json");
 const port = Number(process.env.PORT || 8787);
+const LOG_LEVELS = { silent: 0, error: 1, info: 2, debug: 3 };
+const logLevelName = getCliLogLevel() || String(process.env.LOG_LEVEL || process.env.ZEND_LOG || "silent").toLowerCase();
+const logLevel = LOG_LEVELS[logLevelName] ?? (["1", "true", "yes", "on"].includes(logLevelName) ? LOG_LEVELS.info : LOG_LEVELS.silent);
 
 const PUSH_TYPES = {
   RULE: "RULE_DEFECT_NOTIFY",
@@ -159,15 +162,34 @@ await saveStore();
 scheduleJobs();
 
 const server = http.createServer(async (req, res) => {
+  const requestId = randomId();
+  const startedAt = Date.now();
+  const requestUrl = new URL(req.url, `http://${req.headers.host}`);
+  const shouldLogRequest = requestUrl.pathname.startsWith("/api/") || canLog("debug");
+  if (shouldLogRequest) {
+    logInfo("request:start", { requestId, method: req.method, path: requestUrl.pathname });
+  }
   try {
     await route(req, res);
   } catch (error) {
+    logError("request:error", { requestId, method: req.method, path: requestUrl.pathname, error: formatError(error) });
     sendJson(res, 500, { ok: false, error: error.message });
+  } finally {
+    if (shouldLogRequest) {
+      logInfo("request:end", {
+        requestId,
+        method: req.method,
+        path: requestUrl.pathname,
+        status: res.statusCode,
+        durationMs: Date.now() - startedAt
+      });
+    }
   }
 });
 
 server.listen(port, () => {
   console.log(`ZenDing Notify is running at http://localhost:${port}`);
+  if (logLevel > LOG_LEVELS.silent) console.log(`[${new Date().toISOString()}] [info] logging enabled: ${getLogLevelName()}`);
 });
 
 async function route(req, res) {
@@ -556,7 +578,7 @@ async function fetchZentaoDefects() {
     return fetchZentaoLegacyDefects();
   }
 
-  const tokenResponse = await fetch(`${trimSlash(config.zentao.baseUrl)}/api.php/v1/tokens`, {
+  const tokenResponse = await fetchWithLog("zentao:token", `${trimSlash(config.zentao.baseUrl)}/api.php/v1/tokens`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ account: config.zentao.account, password: config.zentao.password })
@@ -575,7 +597,7 @@ async function fetchZentaoDefects() {
 
   for (const productId of productIds) {
     const endpoint = productId ? `/api.php/v1/products/${productId}/bugs` : "/api.php/v1/bugs";
-    const response = await fetch(`${trimSlash(config.zentao.baseUrl)}${endpoint}`, {
+    const response = await fetchWithLog("zentao:bugs", `${trimSlash(config.zentao.baseUrl)}${endpoint}`, {
       headers: { Token: token, "Content-Type": "application/json" }
     });
     if (!response.ok) throw new Error(`Get Zentao bugs failed: ${response.status}`);
@@ -616,7 +638,7 @@ async function fetchZentaoLegacyBugPage(productId) {
   ];
 
   for (const url of urls) {
-    const response = await fetch(url, { headers });
+    const response = await fetchWithLog("zentao:legacy-bugs", url, { headers });
     if (!response.ok) throw new Error(`Get Zentao legacy bugs failed: ${response.status}`);
     const text = await response.text();
     if (/bug-view-\d+/.test(text) && /<tr[\s\S]*data-id=/.test(text)) {
@@ -624,7 +646,7 @@ async function fetchZentaoLegacyBugPage(productId) {
       const recTotal = Math.max(total, ZENTAO_BUGS_PAGE_SIZE);
       if (total > 0 && total > 20 && !url.includes(`-${recTotal}-${ZENTAO_BUGS_PAGE_SIZE}-1.html`)) {
         const fullUrl = `${base}/bug-browse-${productId}-0-all-0-id_desc-${recTotal}-${ZENTAO_BUGS_PAGE_SIZE}-1.html`;
-        const fullResponse = await fetch(fullUrl, { headers: { ...headers, Referer: url } });
+        const fullResponse = await fetchWithLog("zentao:legacy-bugs-full", fullUrl, { headers: { ...headers, Referer: url } });
         if (!fullResponse.ok) throw new Error(`Get Zentao legacy bugs failed: ${fullResponse.status}`);
         return fullResponse.text();
       }
@@ -644,7 +666,7 @@ async function fetchZentaoLegacyRecentEditedBugPage(productId) {
     Referer: `${base}/my/`,
     "User-Agent": "Mozilla/5.0 ZenDingNotify/0.1"
   };
-  const response = await fetch(`${base}/bug-browse-${productId}-0-all-0-lastEditedDate_desc-200-200-1.html`, { headers });
+  const response = await fetchWithLog("zentao:recent-edited", `${base}/bug-browse-${productId}-0-all-0-lastEditedDate_desc-200-200-1.html`, { headers });
   if (!response.ok) throw new Error(`Get Zentao recent edited bugs failed: ${response.status}`);
   return response.text();
 }
@@ -731,7 +753,7 @@ async function fetchZentaoProjectTeamAssignees() {
     Referer: `${base}/project-view-${projectId}.html`,
     "User-Agent": "Mozilla/5.0 ZenDingNotify/0.1"
   };
-  const response = await fetch(`${base}/project-team-${projectId}.html`, { headers });
+  const response = await fetchWithLog("zentao:project-team", `${base}/project-team-${projectId}.html`, { headers });
   if (!response.ok) throw new Error(`Get Zentao team page failed: ${response.status}`);
   const text = await response.text();
   if (isZentaoLoginRedirect(text)) throw new Error("Zentao cookie is invalid or expired; request was redirected to login page");
@@ -744,7 +766,7 @@ async function sendDingTalkMarkdown({ title, text, mobiles }) {
   }
 
   const url = buildDingTalkUrl();
-  const response = await fetch(url, {
+  const response = await fetchWithLog("dingtalk:markdown", url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1203,7 +1225,7 @@ function mergeDefect(previous, next) {
 
 async function fetchZentaoBugDetail(defect) {
   const base = trimSlash(config.zentao.baseUrl);
-  const response = await fetch(`${base}/bug-view-${defect.id}.html`, {
+  const response = await fetchWithLog("zentao:bug-detail", `${base}/bug-view-${defect.id}.html`, {
     headers: {
       Cookie: config.zentao.cookie,
       Accept: "text/html,*/*;q=0.8",
@@ -2207,6 +2229,99 @@ function contentType(filePath) {
 
 function trimSlash(value) {
   return String(value || "").replace(/\/+$/, "");
+}
+
+function getCliLogLevel() {
+  const args = process.argv.slice(2);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index] || "").toLowerCase();
+    if (arg === "--debug") return "debug";
+    if (arg === "--verbose" || arg === "-v") return "info";
+    if (arg === "--quiet" || arg === "--silent") return "silent";
+    if (arg === "--log" || arg === "--log-level") return normalizeLogLevelArg(args[index + 1]);
+    if (arg.startsWith("--log=")) return normalizeLogLevelArg(arg.slice("--log=".length));
+    if (arg.startsWith("--log-level=")) return normalizeLogLevelArg(arg.slice("--log-level=".length));
+  }
+  return "";
+}
+
+function normalizeLogLevelArg(value) {
+  const level = String(value || "").trim().toLowerCase();
+  if (!level) return "";
+  if (level === "true" || level === "yes" || level === "on" || level === "1") return "info";
+  return level;
+}
+
+async function fetchWithLog(label, url, options) {
+  const startedAt = Date.now();
+  logDebug("external:start", { label, method: options?.method || "GET", url: sanitizeUrl(url) });
+  try {
+    const response = await fetch(url, options);
+    logDebug("external:end", {
+      label,
+      method: options?.method || "GET",
+      url: sanitizeUrl(url),
+      status: response.status,
+      durationMs: Date.now() - startedAt
+    });
+    return response;
+  } catch (error) {
+    logError("external:error", {
+      label,
+      method: options?.method || "GET",
+      url: sanitizeUrl(url),
+      durationMs: Date.now() - startedAt,
+      error: formatError(error)
+    });
+    throw error;
+  }
+}
+
+function canLog(level) {
+  return logLevel >= LOG_LEVELS[level];
+}
+
+function logDebug(message, details) {
+  if (canLog("debug")) writeLog("debug", message, details);
+}
+
+function logInfo(message, details) {
+  if (canLog("info")) writeLog("info", message, details);
+}
+
+function logError(message, details) {
+  if (canLog("error")) writeLog("error", message, details);
+}
+
+function writeLog(level, message, details = {}) {
+  const line = `[${new Date().toISOString()}] [${level}] ${message} ${JSON.stringify(details)}`;
+  if (level === "error") console.error(line);
+  else console.log(line);
+}
+
+function formatError(error) {
+  return {
+    name: error?.name || "Error",
+    message: error?.message || String(error),
+    cause: error?.cause?.message || error?.cause?.code || "",
+    stack: canLog("debug") ? error?.stack || "" : ""
+  };
+}
+
+function sanitizeUrl(value) {
+  try {
+    const url = new URL(String(value));
+    ["access_token", "timestamp", "sign"].forEach((key) => {
+      if (url.searchParams.has(key)) url.searchParams.set(key, "***");
+    });
+    return url.toString();
+  } catch {
+    return String(value || "").replace(/(access_token|timestamp|sign)=([^&]+)/gi, "$1=***");
+  }
+}
+
+function getLogLevelName() {
+  return Object.entries(LOG_LEVELS).find(([, value]) => value === logLevel)?.[0] || "silent";
 }
 
 function sha256(value) {

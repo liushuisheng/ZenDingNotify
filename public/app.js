@@ -678,7 +678,7 @@ async function refreshFromZentao() {
     const response = await fetch("/api/actions/fetch", { method: "POST" });
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.error || "抓取禅道数据失败");
-    await loadAll();
+    await loadAll({ notifyGuestNewDefects: true });
     showToast(`已抓取 ${data.count} 条缺陷数据`);
   } catch (error) {
     showToast(error.message, "error");
@@ -692,8 +692,11 @@ async function pollFetchStatus() {
   try {
     const status = await getJson("/api/config-status");
     const wasFetching = state.fetching;
+    const previousLastFetchAt = state.lastFetchAt;
     renderStatus(status);
-    if (wasFetching && !state.fetching) await loadAll({ notifyGuestNewDefects: true });
+    const fetchFinished = wasFetching && !state.fetching;
+    const fetchChanged = Boolean(previousLastFetchAt && status.lastFetchAt && status.lastFetchAt !== previousLastFetchAt);
+    if (fetchFinished || fetchChanged) await loadAll({ notifyGuestNewDefects: true });
   } catch {
     // The next poll will recover; keep the current UI state meanwhile.
   }
@@ -790,8 +793,8 @@ function setFetchButtonState(fetching) {
   if (!button) return;
   button.disabled = fetching;
   button.classList.toggle("loading", fetching);
-  button.title = fetching ? "正在同步禅道数据..." : "同步更新";
-  button.setAttribute("aria-label", fetching ? "正在同步禅道数据" : "同步更新");
+  button.removeAttribute("title");
+  button.removeAttribute("aria-label");
 }
 
 function renderLastSyncTime(value) {
@@ -1078,6 +1081,7 @@ function renderDefects(options = {}) {
   const showTransferToColumn = state.defectListMode === "ownerTodayTransferred";
   const showTransferFromColumn = state.defectListMode === "ownerTodayReturned";
   const showClosedByColumn = state.defectListMode === "todayClosed";
+  const showCreatorColumn = ["todayAdded", "ownerTodayAdded"].includes(state.defectListMode);
   const headers = ["ID", "标题", "优先级", "状态"];
   if (showOwnerColumn) headers.push("负责人");
   if (showTransferToColumn) headers.push("转入人");
@@ -1085,6 +1089,7 @@ function renderDefects(options = {}) {
   if (showResolverColumn) headers.push("解决人");
   if (showClosedByColumn) headers.push("由谁关闭");
   if (terminalDateColumn) headers.push(terminalDateColumn);
+  if (showCreatorColumn) headers.push("创建人");
   headers.push("创建时间");
 
   document.getElementById("defectsTable").innerHTML = renderTable(
@@ -1102,6 +1107,7 @@ function renderDefects(options = {}) {
       if (showResolverColumn) row.push(titledText(formatPersonDisplayName(getResolverNameForMode(defect, state.defectListMode))));
       if (showClosedByColumn) row.push(titledText(formatPersonDisplayName(defect.closedBy)));
       if (terminalDateColumn) row.push(formatTime(getModeDate(defect, state.defectListMode) || getTerminalDate(defect)));
+      if (showCreatorColumn) row.push(titledText(formatPersonDisplayName(defect.openedBy)));
       row.push(formatTime(defect.openedDate));
       return row;
     }),
@@ -1932,7 +1938,7 @@ function renderTable(headers, rows, className = "") {
 }
 
 function getColumnClass(header) {
-  if (["负责人", "解决人"].includes(header)) return "col-person";
+  if (["负责人", "解决人", "创建人"].includes(header)) return "col-person";
   if (["创建时间", "解决时间", "关闭时间", "解决时间/关闭时间", "转入时间", "转出时间"].includes(header)) return "col-time";
   return "";
 }

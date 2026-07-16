@@ -18,6 +18,38 @@
 npm start
 ```
 
+排查线上或本地运行问题时，可以通过 `npm start` 参数开启服务日志。若服务已经在运行，先停止当前进程，再用带参数的命令重新启动：
+
+```bash
+# 记录 API 请求、耗时和错误
+npm start -- --log=info
+
+# 额外记录禅道/钉钉外部请求状态，敏感 URL 参数会自动打码
+npm start -- --log=debug
+```
+
+也可以使用简写：
+
+```bash
+npm start -- --debug
+```
+
+启动后在浏览器触发对应操作，例如手动推送 P1/P2：
+
+```text
+POST http://localhost:8787/api/actions/push/p1p2
+```
+
+终端会输出请求和外部调用日志，例如：
+
+```text
+[info] logging enabled: debug
+[info] request:start {"method":"POST","path":"/api/actions/push/p1p2"}
+[debug] external:start {"label":"dingtalk:markdown","method":"POST","url":"https://oapi.dingtalk.com/robot/send?access_token=***"}
+[debug] external:end {"label":"dingtalk:markdown","status":200,"durationMs":320}
+[info] request:end {"status":200,"durationMs":450}
+```
+
 然后打开：
 
 ```text
