@@ -1887,7 +1887,7 @@ function getAccessLogSessionStatus(log) {
   if (log.awayAt) return "away";
   const lastSeenAt = new Date(log.lastSeenAt || log.accessedAt).getTime();
   if (!Number.isFinite(lastSeenAt)) return "away";
-  return Date.now() - lastSeenAt <= 45 * 1000 ? "online" : "away";
+  return Date.now() - lastSeenAt <= 10 * 1000 ? "online" : "away";
 }
 
 function shouldRecordGuestAccess(req, url, details) {

@@ -25,7 +25,8 @@ const state = {
   originalTitle: document.title,
   activeGuestNotificationCount: 0,
   authenticated: false,
-  accessVisit: null
+  accessVisit: null,
+  accessAwayTimer: null
 };
 
 const difficultyOptions = [
@@ -122,8 +123,11 @@ window.addEventListener("popstate", handleRouteChange);
 window.addEventListener("beforeunload", () => sendAccessVisitDuration({ beacon: true, ended: true }));
 window.addEventListener("pagehide", () => sendAccessVisitDuration({ beacon: true, ended: true }));
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") sendAccessVisitDuration({ beacon: true, away: true });
-  else if (document.visibilityState === "visible") sendAccessVisitDuration();
+  if (document.visibilityState === "hidden") scheduleAccessAwayReport();
+  else if (document.visibilityState === "visible") {
+    clearAccessAwayReport();
+    sendAccessVisitDuration();
+  }
 });
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
@@ -630,13 +634,30 @@ function startAccessVisitTracking() {
   state.accessVisit = {
     sessionId: createClientSessionId(),
     startedAt: Date.now(),
-    timer: window.setInterval(() => sendAccessVisitDuration(), 15000)
+    timer: window.setInterval(() => sendAccessVisitDuration(), 5000)
   };
   sendAccessVisitDuration();
 }
 
+function scheduleAccessAwayReport() {
+  clearAccessAwayReport();
+  state.accessAwayTimer = window.setTimeout(() => {
+    state.accessAwayTimer = null;
+    if (document.visibilityState === "hidden") {
+      sendAccessVisitDuration({ beacon: true, away: true });
+    }
+  }, 10000);
+}
+
+function clearAccessAwayReport() {
+  if (!state.accessAwayTimer) return;
+  window.clearTimeout(state.accessAwayTimer);
+  state.accessAwayTimer = null;
+}
+
 function sendAccessVisitDuration(options = {}) {
   if (!guestMode || !state.accessVisit) return;
+  if (document.visibilityState === "hidden" && !options.away && !options.ended) return;
   const payload = {
     sessionId: state.accessVisit.sessionId,
     owner: getActiveOwnerScope(),
