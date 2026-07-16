@@ -11,6 +11,7 @@ const publicDir = path.join(rootDir, "public");
 const configPath = path.join(dataDir, "config.json");
 const storePath = path.join(dataDir, "store.json");
 const port = Number(process.env.PORT || 8787);
+const GUEST_OVERVIEW_URL = "http://10.2.81.252:8787/guest";
 const LOG_LEVELS = { silent: 0, error: 1, info: 2, debug: 3 };
 const logLevelName = getCliLogLevel() || String(process.env.LOG_LEVEL || process.env.ZEND_LOG || "silent").toLowerCase();
 const logLevel = LOG_LEVELS[logLevelName] ?? (["1", "true", "yes", "on"].includes(logLevelName) ? LOG_LEVELS.info : LOG_LEVELS.silent);
@@ -27,6 +28,8 @@ const ZENTAO_RECENT_EDITED_LIMIT = 80;
 const ZENTAO_DETAIL_CONCURRENCY = 16;
 const MIN_DEFECT_CACHE_TTL_MS = 60 * 1000;
 const ADMIN_COOKIE_NAME = "zend_admin";
+const GUEST_COOKIE_PREFIX = "zend_guest_";
+const OVERVIEW_DEFECT_DIFFICULTIES = new Set(["simple", "medium", "hard"]);
 const FRONTEND_OWNERS = ["刘水生", "谌祖恒", "王思鑫", "李彦龙", "李思成", "马陈绵"];
 const TEST_OWNER_ALIASES = ["陈加鹏", "陈家鹏"];
 const ZENTAO_ACCOUNT_ALIASES = {
@@ -64,7 +67,8 @@ const defaultConfig = {
   dingtalk: {
     webhook: "",
     secret: "",
-    dryRun: true
+    dryRun: true,
+    atAll: false
   },
   rules: {
     statuses: ["active", "changing"],
@@ -80,10 +84,8 @@ const defaultConfig = {
   scheduler: {
     enabled: true,
     fetchEveryMinutes: 5,
-    yesterdayReportTime: "09:40",
     p1p2ReportTimes: ["18:00"],
     rules: {
-      yesterday: true,
       p1p2: true
     }
   },
@@ -156,6 +158,10 @@ ensureAdminToken();
 store.defects = store.defects?.length ? store.defects : (config.zentao.enabled ? [] : sampleDefects);
 store.pinnedOverviewDefects = normalizePinnedDefectIds(store.pinnedOverviewDefects);
 store.requirementOverviewDefects = normalizeOverviewDefectIds(store.requirementOverviewDefects);
+store.overviewDefectDifficulties = normalizeOverviewDefectDifficulties(store.overviewDefectDifficulties);
+store.guestPasswords = normalizeGuestPasswords(store.guestPasswords);
+store.accessLogs = normalizeAccessLogs(store.accessLogs);
+store.operationLogs = normalizeOperationLogs(store.operationLogs);
 await saveConfig();
 await saveStore();
 
@@ -220,6 +226,51 @@ async function route(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/guest-session") {
+    const ownerScope = getValidatedOwnerScopeFromUrl(url);
+    if (ownerScope.invalid || !ownerScope.owner) {
+      sendJson(res, 404, { ok: false, error: "人员不存在", message: `人员不存在：${ownerScope.raw}` });
+      return;
+    }
+    sendJson(res, 200, getGuestSessionPayload(req, ownerScope.owner));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/guest-login") {
+    const body = await readBodyJson(req);
+    const owner = resolveConfiguredOwnerScope(body.owner || "");
+    if (!owner) {
+      sendJson(res, 404, { ok: false, error: "人员不存在", message: `人员不存在：${body.owner || ""}` });
+      return;
+    }
+    const password = String(body.password || "");
+    if (password.length < 1) {
+      sendJson(res, 400, { ok: false, error: "密码不能为空", message: "请输入访问密码" });
+      return;
+    }
+    const result = await loginGuestOwner(owner, password);
+    if (!result.ok) {
+      sendJson(res, 401, result);
+      return;
+    }
+    setGuestCookie(res, owner, result.token, 200, { ok: true, owner, initialized: result.initialized });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/access-log/visit") {
+    const body = await readBodyJson(req);
+    const result = await recordGuestVisitDuration(req, body);
+    sendJson(res, 200, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/operation-log") {
+    const body = await readBodyJson(req);
+    const result = await recordGuestOperation(req, body);
+    sendJson(res, 200, result);
+    return;
+  }
+
   if (!isPublicRequest(req, url) && !isAdminRequest(req)) {
     sendJson(res, 401, {
       ok: false,
@@ -246,7 +297,14 @@ async function route(req, res) {
 
   if (req.method === "PUT" && url.pathname === "/api/overview-pins") {
     const body = await readBodyJson(req);
-    store.pinnedOverviewDefects = normalizeOverviewDefectIds(body.pinned || body.ids);
+    const scope = getPublicOverviewOperationScope(req, url);
+    if (scope.error) {
+      sendJson(res, scope.status, { ok: false, error: scope.error, message: scope.message });
+      return;
+    }
+    store.pinnedOverviewDefects = scope.owner
+      ? applyScopedOverviewDefectIds(store.pinnedOverviewDefects, body.pinned || body.ids, scope.allowedIds)
+      : normalizeOverviewDefectIds(body.pinned || body.ids);
     await saveStore();
     sendJson(res, 200, { ok: true, pinned: store.pinnedOverviewDefects });
     return;
@@ -259,9 +317,36 @@ async function route(req, res) {
 
   if (req.method === "PUT" && url.pathname === "/api/overview-requirements") {
     const body = await readBodyJson(req);
-    store.requirementOverviewDefects = normalizeOverviewDefectIds(body.requirements || body.ids);
+    const scope = getPublicOverviewOperationScope(req, url);
+    if (scope.error) {
+      sendJson(res, scope.status, { ok: false, error: scope.error, message: scope.message });
+      return;
+    }
+    store.requirementOverviewDefects = scope.owner
+      ? applyScopedOverviewDefectIds(store.requirementOverviewDefects, body.requirements || body.ids, scope.allowedIds)
+      : normalizeOverviewDefectIds(body.requirements || body.ids);
     await saveStore();
     sendJson(res, 200, { ok: true, requirements: store.requirementOverviewDefects });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/overview-difficulties") {
+    sendJson(res, 200, { difficulties: getOverviewDefectDifficulties() });
+    return;
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/overview-difficulties") {
+    const body = await readBodyJson(req);
+    const scope = getPublicOverviewOperationScope(req, url);
+    if (scope.error) {
+      sendJson(res, scope.status, { ok: false, error: scope.error, message: scope.message });
+      return;
+    }
+    store.overviewDefectDifficulties = scope.owner
+      ? applyScopedOverviewDefectDifficulties(store.overviewDefectDifficulties, body.difficulties, scope.allowedIds)
+      : normalizeOverviewDefectDifficulties(body.difficulties);
+    await saveStore();
+    sendJson(res, 200, { ok: true, difficulties: store.overviewDefectDifficulties });
     return;
   }
 
@@ -285,14 +370,24 @@ async function route(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/access-logs") {
+    sendJson(res, 200, { logs: getRecentAccessLogs() });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/operation-logs") {
+    sendJson(res, 200, { logs: getRecentOperationLogs() });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/config-status") {
     sendJson(res, 200, {
       zentaoEnabled: Boolean(config.zentao.enabled),
       dingtalkDryRun: Boolean(config.dingtalk.dryRun),
+      dingtalkAtAll: Boolean(config.dingtalk.atAll),
       hasDingWebhook: Boolean(getDingTalkWebhook()),
       schedulerEnabled: config.scheduler?.enabled !== false,
       schedulerRules: getSchedulerRuleConfig(),
-      mappedUsers: Object.keys(config.userMappings || {}).length,
       lastFetchAt: getLastSuccessfulFetchAt(),
       fetching: Boolean(fetchInFlight)
     });
@@ -316,10 +411,26 @@ async function route(req, res) {
     if (!Object.prototype.hasOwnProperty.call(rawConfig, "auth")) {
       nextConfig.auth.adminToken = config.auth?.adminToken || nextConfig.auth.adminToken;
     }
+    if (!Object.prototype.hasOwnProperty.call(rawConfig, "userMappings")) {
+      nextConfig.userMappings = config.userMappings || nextConfig.userMappings;
+    }
     replaceConfig(nextConfig);
     ensureAdminToken();
     await saveConfig();
     setAdminCookie(res, config.auth.adminToken, 200, { ok: true, config });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/guest-passwords/reset") {
+    const body = await readBodyJson(req);
+    const owner = resolveConfiguredOwnerScope(body.owner || "");
+    if (!owner) {
+      sendJson(res, 404, { ok: false, error: "人员不存在", message: `人员不存在：${body.owner || ""}` });
+      return;
+    }
+    delete store.guestPasswords[getGuestAccountKey(owner)];
+    await saveStore();
+    sendJson(res, 200, { ok: true, owner });
     return;
   }
 
@@ -334,7 +445,7 @@ async function route(req, res) {
   if (req.method === "PATCH" && url.pathname === "/api/scheduler/rule") {
     const body = await readBodyJson(req);
     const rule = String(body.rule || "");
-    if (!["yesterday", "p1p2"].includes(rule)) {
+    if (!["p1p2"].includes(rule)) {
       sendJson(res, 400, { ok: false, error: "未知的推送规则" });
       return;
     }
@@ -356,8 +467,7 @@ async function route(req, res) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/actions/push/yesterday") {
-    const result = await runYesterdayReport("manual");
-    sendJson(res, 200, result);
+    sendJson(res, 410, { ok: false, disabled: true, error: "昨日处理日报推送已停用" });
     return;
   }
 
@@ -498,9 +608,15 @@ async function runYesterdayReport(trigger) {
 
 async function runP1P2Report(trigger) {
   const fetchResult = await ensureFreshDefects(trigger);
-  const defects = getFilteredDefects().filter((defect) => isOpenDefect(defect) && isUrgentDefect(defect) && isPushVisibleDefect(defect));
+  const allUrgentDefects = getFilteredDefects().filter(isUrgentDefect);
+  const overviewStats = buildOverview().stats;
+  const stats = {
+    todayAdded: overviewStats.todayAdded,
+    todayResolved: overviewStats.todayResolved
+  };
+  const defects = allUrgentDefects.filter((defect) => isOpenDefect(defect) && isPushVisibleDefect(defect));
   const title = "今日 P1/P2 缺陷风险提醒";
-  const text = buildP1P2Message(defects);
+  const text = buildP1P2Message(defects, stats);
   const mobiles = getMobilesForDefects(defects);
   const result = await pushAndLog(PUSH_TYPES.P1P2, title, text, mobiles, trigger, defects);
   return { ...result, fetch: fetchResult };
@@ -550,6 +666,7 @@ async function pushAndLog(type, title, text, mobiles, trigger, defects) {
     return { ok: true, skipped: true, reason: "duplicate" };
   }
 
+  const atAll = Boolean(config.dingtalk.atAll);
   const result = await sendDingTalkMarkdown({ title, text, mobiles });
   const log = {
     id: randomId(),
@@ -557,6 +674,7 @@ async function pushAndLog(type, title, text, mobiles, trigger, defects) {
     title,
     text,
     mobiles,
+    atAll,
     defectIds: defects.map((defect) => defect.id),
     trigger,
     eventHash,
@@ -570,7 +688,7 @@ async function pushAndLog(type, title, text, mobiles, trigger, defects) {
   store.pushLogs.push(log);
   await saveStore();
 
-  return { ok: result.ok, dryRun: result.dryRun, defectCount: defects.length, mobiles, logId: log.id, error: result.error };
+  return { ok: result.ok, dryRun: result.dryRun, defectCount: defects.length, mobiles, atAll, logId: log.id, error: result.error };
 }
 
 async function fetchZentaoDefects() {
@@ -761,8 +879,9 @@ async function fetchZentaoProjectTeamAssignees() {
 }
 
 async function sendDingTalkMarkdown({ title, text, mobiles }) {
+  const atAll = Boolean(config.dingtalk.atAll);
   if (config.dingtalk.dryRun || !getDingTalkWebhook()) {
-    return { ok: true, dryRun: true, response: { message: "dry-run" } };
+    return { ok: true, dryRun: true, atAll, response: { message: "dry-run" } };
   }
 
   const url = buildDingTalkUrl();
@@ -772,12 +891,12 @@ async function sendDingTalkMarkdown({ title, text, mobiles }) {
     body: JSON.stringify({
       msgtype: "markdown",
       markdown: { title, text },
-      at: { atMobiles: mobiles, isAtAll: false }
+      at: { atMobiles: [], isAtAll: atAll }
     })
   });
   const data = await response.json();
   const ok = data.errcode === 0;
-  return { ok, dryRun: false, response: data, error: ok ? "" : data.errmsg || "DingTalk send failed" };
+  return { ok, dryRun: false, atAll, response: data, error: ok ? "" : data.errmsg || "DingTalk send failed" };
 }
 
 function buildDingTalkUrl() {
@@ -840,16 +959,69 @@ function buildOverview(options = {}) {
   };
 }
 
+function getPublicOverviewOperationScope(req, url) {
+  if (isAdminRequest(req)) return { owner: "", allowedIds: null };
+  const ownerScope = getValidatedOwnerScopeFromUrl(url);
+  if (ownerScope.invalid) {
+    return { status: 404, error: "人员不存在", message: `人员不存在：${ownerScope.raw}` };
+  }
+  if (!ownerScope.owner) {
+    return { status: 403, error: "Forbidden", message: "访客总览不允许操作待办列表" };
+  }
+  if (!isGuestOwnerRequest(req, ownerScope.owner)) {
+    return { status: 401, error: "Unauthorized", message: "个人访客页面需要先登录" };
+  }
+  return { owner: ownerScope.owner, allowedIds: getOverviewPendingDefectIdSet(ownerScope.owner) };
+}
+
+function getOverviewPendingDefectIdSet(owner) {
+  const overview = buildOverview({ owner });
+  return new Set([...overview.urgentOpen, ...overview.normalOpen].map((defect) => String(defect.id || "").trim()).filter(Boolean));
+}
+
+function applyScopedOverviewDefectIds(current, next, allowedIds) {
+  const normalizedCurrent = normalizeOverviewDefectIds(current);
+  const normalizedNext = normalizeOverviewDefectIds(next);
+  const preserved = normalizedCurrent.filter((id) => !allowedIds.has(id));
+  const scopedNext = normalizedNext.filter((id) => allowedIds.has(id));
+  return [...new Set([...preserved, ...scopedNext])];
+}
+
+function applyScopedOverviewDefectDifficulties(current, next, allowedIds) {
+  const normalizedCurrent = normalizeOverviewDefectDifficulties(current);
+  const normalizedNext = normalizeOverviewDefectDifficulties(next);
+  for (const id of allowedIds) delete normalizedCurrent[id];
+  for (const [id, difficulty] of Object.entries(normalizedNext)) {
+    if (allowedIds.has(id)) normalizedCurrent[id] = difficulty;
+  }
+  return normalizedCurrent;
+}
+
 function buildRuleMessage(defects) {
   const sortedDefects = sortDefectsForMessage(defects);
   const urgentCount = sortedDefects.filter((defect) => ["0", "1"].includes(String(defect.priority))).length;
-  if (!sortedDefects.length) return "### 禅道缺陷提醒\n\n当前没有 P0/P1 未完成缺陷。";
+  if (!sortedDefects.length) {
+    return [
+      `### 禅道缺陷提醒`,
+      ``,
+      `#### 📌 关键数据`,
+      `> 当前没有 P0/P1 未完成缺陷。`,
+      ``,
+      formatMessageFooter()
+    ].join("\n");
+  }
   return [
     `### 禅道缺陷提醒`,
     ``,
-    `P0/P1 未完成缺陷共 **${urgentCount}** 个，请相关处理人优先关注。`,
+    `#### 📌 关键数据`,
+    `> P0/P1 未完成：**${urgentCount}** 个`,
+    `> 温馨提示：相关处理人可按需查看`,
     ``,
-    ...formatDefects(sortedDefects)
+    `#### 📋 待处理明细`,
+    ``,
+    ...formatDefects(sortedDefects),
+    ``,
+    formatMessageFooter()
   ].join("\n");
 }
 
@@ -861,55 +1033,99 @@ function buildYesterdayMessage(defects, related, remaining, range) {
   return [
     `### 昨日缺陷处理日报`,
     ``,
-    `统计日期：${formatDate(range.start)}`,
+    `#### 📌 关键数据`,
+    `> 统计日期：${formatDate(range.start)}`,
+    `> 昨日新增：**${added.length}** 个`,
+    `> 昨日解决/关闭：**${resolved.length}** 个`,
+    `> 当前未完成：**${remaining.length}** 个`,
+    `> P1/P2 未完成：**${urgentRemaining.length}** 个`,
+    `> 非 P1/P2 未完成：**${normalRemaining.length}** 个`,
     ``,
-    `- 昨日新增：${added.length}`,
-    `- 昨日解决/关闭：${resolved.length}`,
-    `- 当前未完成：${remaining.length}`,
-    `- P1/P2 未完成：${urgentRemaining.length}`,
-    `- 非 P1/P2 未完成：${normalRemaining.length}`,
+    `#### 📋 剩余 P1/P2`,
     ``,
-    `#### 剩余 P1/P2`,
     urgentRemaining.length ? formatDefects(sortDefectsForMessage(urgentRemaining)).join("\n") : "暂无。",
     ``,
-    `#### 普通待处理`,
+    `#### 📋 普通待处理`,
+    ``,
     normalRemaining.length ? formatDefects(sortDefectsForMessage(normalRemaining).slice(0, 12)).join("\n") : "暂无。",
-    normalRemaining.length > 12 ? `\n还有 ${normalRemaining.length - 12} 个普通缺陷未展示，请在本地看板查看。` : ""
+    normalRemaining.length > 12 ? `\n还有 ${normalRemaining.length - 12} 个普通缺陷未展示，请在本地看板查看。` : "",
+    ``,
+    formatMessageFooter()
   ].join("\n");
 }
 
-function buildP1P2Message(defects) {
+function buildP1P2Message(defects, stats = {}) {
   const sortedDefects = sortDefectsForMessage(defects);
-  if (!sortedDefects.length) return "### 今日 P1/P2 缺陷风险提醒\n\n当前没有剩余 P1/P2 未完成缺陷。";
+  const todayAdded = Number(stats.todayAdded) || 0;
+  const todayResolved = Number(stats.todayResolved) || 0;
+  if (!sortedDefects.length) {
+    return [
+      `### 今日 P1/P2 缺陷风险提醒`,
+      ``,
+      `#### 📌 关键数据`,
+      `> 今日新增缺陷：**${todayAdded}** 个`,
+      `> 今日已修复缺陷：**${todayResolved}** 个`,
+      `> 当前剩余 P1/P2 未完成：**0** 个`,
+      ``,
+      formatMessageFooter()
+    ].join("\n");
+  }
   return [
     `### 今日 P1/P2 缺陷风险提醒`,
     ``,
-    `当前剩余 **${sortedDefects.length}** 个 P1/P2 未完成缺陷，请相关处理人关注。`,
+    `#### 📌 关键数据`,
+    `> 今日新增缺陷：**${todayAdded}** 个`,
+    `> 今日已修复缺陷：**${todayResolved}** 个`,
+    `> 当前剩余 P1/P2 未完成：**${sortedDefects.length}** 个`,
+    `> 温馨提示：相关处理人可按需查看`,
     ``,
-    ...formatDefects(sortedDefects)
+    `#### 📋 待处理明细`,
+    ``,
+    ...formatDefects(sortedDefects),
+    ``,
+    formatMessageFooter()
   ].join("\n");
 }
 
 function buildOverdueMessage(defects) {
   const sortedDefects = sortDefectsByPriority(defects);
-  if (!sortedDefects.length) return "### 超期缺陷单\n\n当前没有符合条件的超期激活缺陷。";
+  if (!sortedDefects.length) {
+    return [
+      `### 超期缺陷单`,
+      ``,
+      `#### 📌 关键数据`,
+      `> 当前没有符合条件的超期激活缺陷。`,
+      ``,
+      formatMessageFooter()
+    ].join("\n");
+  }
   return [
     `### 超期缺陷单`,
     ``,
-    `当前有 **${sortedDefects.length}** 个超期激活缺陷，请相关处理人关注。`,
+    `#### 📌 关键数据`,
+    `> 超期激活缺陷：**${sortedDefects.length}** 个`,
+    `> 温馨提示：相关处理人可按需查看`,
     ``,
-    ...formatDefects(sortedDefects)
+    `#### 📋 超期明细`,
+    ``,
+    ...formatDefects(sortedDefects),
+    ``,
+    formatMessageFooter()
   ].join("\n");
 }
 
+function formatMessageFooter() {
+  return `🔎 查看完整数据：[缺陷总览](${GUEST_OVERVIEW_URL})`;
+}
+
 function formatDefects(defects) {
-  return defects.map((defect) => {
+  return defects.map((defect, index) => {
     const user = getUserMappingForAssignee(defect.assignedTo);
     const displayName = normalizeAssigneeName(user?.name || defect.assignedTo);
     const ownerName = displayName || "未指派";
     const owner = user?.mobile ? `**${ownerName}** @${user.mobile}` : `**${ownerName}**`;
-    const link = defect.url ? ` [查看](${defect.url})` : "";
-    return `- #${defect.id} [P${defect.priority}] ${defect.title}；负责人：${owner}${link}`;
+    const link = defect.url ? `   [查看缺陷](${defect.url})` : "";
+    return `${index + 1}. #${defect.id} [P${defect.priority}] ${defect.title}<br>负责人：${owner}${link}`;
   });
 }
 
@@ -1503,6 +1719,231 @@ function getRecentPushLogs() {
     .slice(0, 20);
 }
 
+function getRecentAccessLogs() {
+  store.accessLogs = normalizeAccessLogs(store.accessLogs);
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  return store.accessLogs
+    .filter((log) => {
+      const time = new Date(log.accessedAt).getTime();
+      return Number.isFinite(time) && time >= since;
+    })
+    .map((log) => ({
+      ...log,
+      sessionStatus: getAccessLogSessionStatus(log)
+    }))
+    .sort((a, b) => new Date(b.accessedAt).getTime() - new Date(a.accessedAt).getTime())
+    .slice(0, 200);
+}
+
+function getRecentOperationLogs() {
+  store.operationLogs = normalizeOperationLogs(store.operationLogs);
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  return store.operationLogs
+    .filter((log) => {
+      const time = new Date(log.operatedAt).getTime();
+      return Number.isFinite(time) && time >= since;
+    })
+    .sort((a, b) => new Date(b.operatedAt).getTime() - new Date(a.operatedAt).getTime())
+    .slice(0, 300);
+}
+
+async function recordGuestOperation(req, body = {}) {
+  const adminOperation = Boolean(body.allowAdmin) && isAdminRequest(req);
+  const owner = resolveConfiguredOwnerScope(body.owner || "");
+  if (!adminOperation && (!owner || !isGuestOwnerRequest(req, owner))) return { ok: true, ignored: true };
+  const action = String(body.action || "").trim().slice(0, 120);
+  if (!action) return { ok: true, ignored: true };
+
+  store.operationLogs = normalizeOperationLogs(store.operationLogs);
+  store.operationLogs.push({
+    id: randomId(),
+    operator: adminOperation ? "管理员" : owner,
+    ip: getClientIp(req),
+    action,
+    detail: String(body.detail || "").trim().slice(0, 240),
+    path: normalizeAccessLogPath(body.path || ""),
+    operatedAt: new Date().toISOString()
+  });
+  store.operationLogs = store.operationLogs.slice(-1500);
+  await saveStore();
+  return { ok: true };
+}
+
+async function recordGuestAccess(req, url, details = {}) {
+  if (!shouldRecordGuestAccess(req, url, details)) return;
+  const accessOwner = getAccessLogOwner(req, url, details);
+  const requestPath = `${url.pathname}${url.search || ""}`;
+  store.accessLogs = normalizeAccessLogs(store.accessLogs);
+  const reusable = findReusableAccessLog({ ip: getClientIp(req), owner: accessOwner, path: requestPath });
+  if (reusable) {
+    reusable.path = preferSpecificGuestPath(reusable.path, requestPath);
+    reusable.lastSeenAt = new Date().toISOString();
+    reusable.awayAt = "";
+    reusable.endedAt = "";
+    await saveStore();
+    return;
+  }
+  store.accessLogs.push({
+    id: randomId(),
+    type: details.type || "page",
+    owner: accessOwner,
+    ip: getClientIp(req),
+    method: req.method,
+    path: requestPath,
+    userAgent: String(req.headers["user-agent"] || "").slice(0, 240),
+    accessedAt: new Date().toISOString(),
+    durationMs: 0,
+    lastSeenAt: "",
+    endedAt: "",
+    awayAt: ""
+  });
+  store.accessLogs = store.accessLogs.slice(-1000);
+  await saveStore();
+}
+
+async function recordGuestVisitDuration(req, body = {}) {
+  const ip = getClientIp(req);
+  if (isLocalClientIp(ip)) return { ok: true, ignored: true };
+  const rawPath = normalizeAccessLogPath(body.path);
+  if (!isGuestRoutePath(rawPath)) return { ok: true, ignored: true };
+  const owner = resolveVisitOwner(req, rawPath, body.owner);
+  if (owner && owner !== "匿名访问" && !isGuestOwnerRequest(req, owner)) return { ok: true, ignored: true };
+
+  const sessionId = String(body.sessionId || "").trim().slice(0, 80);
+  const durationMs = Math.max(0, Math.min(24 * 60 * 60 * 1000, Number(body.durationMs) || 0));
+  const ended = Boolean(body.ended);
+  const away = Boolean(body.away);
+  const now = new Date().toISOString();
+  store.accessLogs = normalizeAccessLogs(store.accessLogs);
+
+  let log = sessionId ? store.accessLogs.find((item) => item.sessionId === sessionId) : null;
+  if (!log) log = findReusableAccessLog({ ip, owner, path: rawPath, sessionId });
+
+  if (!log) {
+    log = {
+      id: randomId(),
+      type: "page",
+      owner,
+      ip,
+      method: "GET",
+      path: rawPath,
+      userAgent: String(req.headers["user-agent"] || "").slice(0, 240),
+      accessedAt: now,
+      durationMs: 0,
+      lastSeenAt: "",
+      endedAt: "",
+      awayAt: ""
+    };
+    store.accessLogs.push(log);
+  }
+
+  log.sessionId = sessionId || log.sessionId || "";
+  log.owner = owner || log.owner || "";
+  log.durationMs = Math.max(Number(log.durationMs) || 0, durationMs);
+  log.lastSeenAt = now;
+  if (ended) log.endedAt = now;
+  else if (away) {
+    if (!log.endedAt) log.awayAt = now;
+  } else {
+    log.endedAt = "";
+    log.awayAt = "";
+  }
+  store.accessLogs = store.accessLogs.slice(-1000);
+  await saveStore();
+  return { ok: true };
+}
+
+function findReusableAccessLog({ ip, owner, path, sessionId }) {
+  const now = Date.now();
+  return store.accessLogs
+    .slice()
+    .reverse()
+    .find((item) => {
+      if (item.type !== "page") return false;
+      if (item.ip !== ip || item.owner !== owner) return false;
+      if (!areSameGuestVisitPath(item.path, path)) return false;
+      const touchedAt = new Date(item.endedAt || item.lastSeenAt || item.accessedAt).getTime();
+      if (!Number.isFinite(touchedAt)) return false;
+      const maxGap = item.endedAt ? 10 * 1000 : 10 * 60 * 1000;
+      return now - touchedAt <= maxGap;
+    });
+}
+
+function areSameGuestVisitPath(left, right) {
+  const leftPath = normalizeAccessLogPath(left);
+  const rightPath = normalizeAccessLogPath(right);
+  return isGuestRoutePath(leftPath) && isGuestRoutePath(rightPath);
+}
+
+function preferSpecificGuestPath(currentPath, nextPath) {
+  const current = normalizeAccessLogPath(currentPath);
+  const next = normalizeAccessLogPath(nextPath);
+  if (current === "/guest" && next !== "/guest") return next;
+  return current || next;
+}
+
+function getAccessLogSessionStatus(log) {
+  if (log.endedAt) return "ended";
+  if (log.awayAt) return "away";
+  const lastSeenAt = new Date(log.lastSeenAt || log.accessedAt).getTime();
+  if (!Number.isFinite(lastSeenAt)) return "away";
+  return Date.now() - lastSeenAt <= 45 * 1000 ? "online" : "away";
+}
+
+function shouldRecordGuestAccess(req, url, details) {
+  if (req.method !== "GET") return false;
+  if (isLocalClientIp(getClientIp(req))) return false;
+  if (details.type !== "page") return false;
+  if (!isGuestRoutePath(url.pathname)) return false;
+  return !details.owner || isGuestOwnerRequest(req, details.owner);
+}
+
+function getAccessLogOwner(req, url, details) {
+  if (details.owner) return details.owner;
+  if (details.type === "page" && (url.pathname === "/guest" || url.pathname === "/guest/")) {
+    return getAuthenticatedGuestOwner(req) || "匿名访问";
+  }
+  return "";
+}
+
+function getClientIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const realIp = String(req.headers["x-real-ip"] || "").trim();
+  const socketIp = String(req.socket?.remoteAddress || "").replace(/^::ffff:/, "");
+  return forwarded || realIp || socketIp || "-";
+}
+
+function normalizeAccessLogPath(value) {
+  const text = String(value || "").trim() || "/guest";
+  try {
+    return new URL(text, "http://localhost").pathname;
+  } catch {
+    return text.split("?")[0] || "/guest";
+  }
+}
+
+function resolveVisitOwner(req, pathname, owner) {
+  const explicitOwner = String(owner || "").trim();
+  if (explicitOwner) return resolveConfiguredOwnerScope(explicitOwner) || explicitOwner;
+  return getOwnerFromGuestPath(pathname) || getAuthenticatedGuestOwner(req) || "匿名访问";
+}
+
+function isLocalClientIp(ip) {
+  const value = String(ip || "").trim().toLowerCase();
+  return ["127.0.0.1", "localhost", "::1", "::ffff:127.0.0.1"].includes(value);
+}
+
+function getOwnerFromGuestPath(pathname) {
+  const parts = String(pathname || "").split("/").filter(Boolean);
+  if (parts[0] !== "guest" || !parts[1]) return "";
+  try {
+    const rawOwner = decodeURIComponent(parts[1]);
+    return resolveConfiguredOwnerScope(rawOwner) || rawOwner;
+  } catch {
+    return parts[1];
+  }
+}
+
 function getMobilesForDefects(defects) {
   return [...new Set(defects.map((defect) => getUserMappingForAssignee(defect.assignedTo)?.mobile).filter(Boolean))];
 }
@@ -1819,19 +2260,6 @@ function scheduleJobs() {
 
     const ruleConfig = getSchedulerRuleConfig();
 
-    if (ruleConfig.yesterday && hhmm === config.scheduler.yesterdayReportTime && store.lastScheduledRun.yesterday !== dateKey) {
-      const runKey = `yesterday:${dateKey}:${hhmm}`;
-      if (!scheduledReportRunsInFlight.has(runKey)) {
-        scheduledReportRunsInFlight.add(runKey);
-        runYesterdayReport("schedule")
-          .then(() => {
-            store.lastScheduledRun.yesterday = dateKey;
-            return saveStore();
-          })
-          .catch((error) => recordJobError("YESTERDAY_DAILY_REPORT", error))
-          .finally(() => scheduledReportRunsInFlight.delete(runKey));
-      }
-    }
     if (ruleConfig.p1p2 && getP1P2ReportTimes().includes(hhmm) && !hasScheduledTimeRun("p1p2", dateKey, hhmm)) {
       const runKey = `p1p2:${dateKey}:${hhmm}`;
       if (scheduledReportRunsInFlight.has(runKey)) return;
@@ -1853,7 +2281,6 @@ function getFetchIntervalMs() {
 
 function getSchedulerRuleConfig() {
   return {
-    yesterday: config.scheduler?.rules?.yesterday !== false,
     p1p2: config.scheduler?.rules?.p1p2 !== false
   };
 }
@@ -1891,6 +2318,10 @@ async function recordJobError(type, error) {
 
 async function serveStatic(requestPath, req, res) {
   if (isGuestRoutePath(requestPath)) {
+    await recordGuestAccess(req, new URL(req.url, `http://${req.headers.host}`), {
+      type: "page",
+      owner: getOwnerFromGuestPath(requestPath)
+    });
     await serveGuestIndex(res);
     return;
   }
@@ -1967,19 +2398,117 @@ function setAdminCookie(res, token, status, data, extraHeaders = {}) {
   res.end(data ? JSON.stringify(data) : "");
 }
 
+function setGuestCookie(res, owner, token, status, data) {
+  const cookieName = getGuestCookieName(owner);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Set-Cookie": `${cookieName}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/`
+  });
+  res.end(JSON.stringify(data));
+}
+
 function isAdminRequest(req) {
   const token = getRequestCookie(req, ADMIN_COOKIE_NAME) || req.headers["x-admin-token"];
   return tokensEqual(token, config.auth?.adminToken);
 }
 
+function getGuestSessionPayload(req, owner) {
+  return {
+    ok: true,
+    owner,
+    initialized: hasGuestPassword(owner),
+    authenticated: isGuestOwnerRequest(req, owner)
+  };
+}
+
+async function loginGuestOwner(owner, password) {
+  const key = getGuestAccountKey(owner);
+  const record = store.guestPasswords[key];
+  if (!record) {
+    const token = createGuestToken();
+    store.guestPasswords[key] = createGuestPasswordRecord(password, token);
+    await saveStore();
+    return { ok: true, initialized: true, token };
+  }
+  if (!verifyGuestPassword(password, record)) {
+    return { ok: false, error: "Unauthorized", message: "访问密码不正确" };
+  }
+  return { ok: true, initialized: true, token: record.token };
+}
+
+function isGuestOwnerRequest(req, owner) {
+  const record = store.guestPasswords[getGuestAccountKey(owner)];
+  if (!record?.token) return false;
+  return tokensEqual(getRequestCookie(req, getGuestCookieName(owner)), record.token);
+}
+
+function getAuthenticatedGuestOwner(req) {
+  for (const owner of getConfiguredAssigneeNames()) {
+    if (isGuestOwnerRequest(req, owner)) return owner;
+  }
+  return "";
+}
+
+function hasGuestPassword(owner) {
+  return Boolean(store.guestPasswords[getGuestAccountKey(owner)]?.hash);
+}
+
+function createGuestPasswordRecord(password, token = createGuestToken()) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  return {
+    salt,
+    hash: hashGuestPassword(password, salt),
+    token,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function verifyGuestPassword(password, record) {
+  if (!record?.salt || !record?.hash) return false;
+  return tokensEqual(hashGuestPassword(password, record.salt), record.hash);
+}
+
+function hashGuestPassword(password, salt) {
+  return crypto.scryptSync(String(password || ""), salt, 32).toString("hex");
+}
+
+function createGuestToken() {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+function getGuestCookieName(owner) {
+  return `${GUEST_COOKIE_PREFIX}${getGuestAccountKey(owner)}`;
+}
+
+function getGuestAccountKey(owner) {
+  return getGuestAccountAliasForOwner(owner) || normalizeAssigneeName(owner).toLowerCase().replace(/[^a-z0-9_-]+/g, "");
+}
+
+function getGuestAccountAliasForOwner(owner) {
+  const normalized = normalizeAssigneeName(owner);
+  return Object.entries(ZENTAO_ACCOUNT_ALIASES)
+    .filter(([account, name]) => /^[a-z][a-z0-9-]*$/i.test(account) && namesEqual(name, normalized))
+    .map(([account]) => account)
+    .sort((left, right) => left.length - right.length || left.localeCompare(right))[0] || "";
+}
+
 function isPublicRequest(req, url) {
   if (url.pathname === "/api/overview-pins" && ["GET", "PUT"].includes(req.method)) return true;
   if (url.pathname === "/api/overview-requirements" && ["GET", "PUT"].includes(req.method)) return true;
+  if (url.pathname === "/api/overview-difficulties" && ["GET", "PUT"].includes(req.method)) return true;
+  if (["/api/guest-session", "/api/guest-login", "/api/access-log/visit", "/api/operation-log"].includes(url.pathname)) return true;
   if (req.method !== "GET") return false;
   if (url.pathname === "/" || url.pathname === "/index.html") return true;
   if (isGuestRoutePath(url.pathname)) return true;
-  if (["/api/overview", "/api/defects", "/api/public-config", "/api/config-status", "/api/session"].includes(url.pathname)) return true;
+  if (["/api/overview", "/api/defects"].includes(url.pathname)) return isPublicDataRequest(req, url);
+  if (["/api/public-config", "/api/config-status", "/api/session"].includes(url.pathname)) return true;
   return ["/app.js", "/styles.css", "/favicon.svg"].includes(url.pathname);
+}
+
+function isPublicDataRequest(req, url) {
+  const owner = url.searchParams.get("owner") || "";
+  if (!owner) return true;
+  return isGuestOwnerRequest(req, owner);
 }
 
 function isGuestRoutePath(pathname) {
@@ -2031,7 +2560,8 @@ function normalizeConfig(value) {
     dingtalk: {
       webhook: normalizeDingTalkWebhook(value.dingtalk?.webhook || value.dingtalk?.accessToken),
       secret: String(value.dingtalk?.secret || "").trim(),
-      dryRun: value.dingtalk?.dryRun !== false
+      dryRun: value.dingtalk?.dryRun !== false,
+      atAll: Boolean(value.dingtalk?.atAll)
     },
     rules: {
       statuses: toStringArray(value.rules?.statuses),
@@ -2043,10 +2573,8 @@ function normalizeConfig(value) {
     scheduler: {
       enabled: value.scheduler?.enabled !== false,
       fetchEveryMinutes: Math.max(1, Number(value.scheduler?.fetchEveryMinutes ?? value.scheduler?.ruleFetchEveryMinutes) || 5),
-      yesterdayReportTime: normalizeTime(value.scheduler?.yesterdayReportTime, "09:40"),
       p1p2ReportTimes: normalizeTimes(value.scheduler?.p1p2ReportTimes || value.scheduler?.p1p2ReportTime, ["18:00"]),
       rules: {
-        yesterday: value.scheduler?.rules?.yesterday !== false,
         p1p2: value.scheduler?.rules?.p1p2 !== false
       }
     },
@@ -2155,7 +2683,7 @@ async function saveStore() {
 }
 
 function defaultStore() {
-  return { defects: [], pushLogs: [], jobRuns: [], lastScheduledRun: {}, pinnedOverviewDefects: [], requirementOverviewDefects: [], fetchSync: { assignees: [], assigneeWatermarks: {}, lastFetchAt: "" } };
+  return { defects: [], pushLogs: [], accessLogs: [], operationLogs: [], jobRuns: [], lastScheduledRun: {}, pinnedOverviewDefects: [], requirementOverviewDefects: [], overviewDefectDifficulties: {}, guestPasswords: {}, fetchSync: { assignees: [], assigneeWatermarks: {}, lastFetchAt: "" } };
 }
 
 function normalizePinnedDefectIds(value) {
@@ -2167,6 +2695,59 @@ function normalizeOverviewDefectIds(value) {
   return [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))];
 }
 
+function normalizeOverviewDefectDifficulties(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).map(([id, difficulty]) => [
+    String(id || "").trim(),
+    String(difficulty || "").trim()
+  ]).filter(([id, difficulty]) => id && OVERVIEW_DEFECT_DIFFICULTIES.has(difficulty)));
+}
+
+function normalizeGuestPasswords(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).map(([owner, record]) => [
+    String(owner || "").trim(),
+    {
+      salt: String(record?.salt || "").trim(),
+      hash: String(record?.hash || "").trim(),
+      token: String(record?.token || "").trim(),
+      updatedAt: String(record?.updatedAt || "").trim()
+    }
+  ]).filter(([owner, record]) => owner && record.salt && record.hash && record.token));
+}
+
+function normalizeAccessLogs(value) {
+  const logs = Array.isArray(value) ? value : [];
+  return logs.map((log) => ({
+    id: String(log?.id || randomId()),
+    type: String(log?.type || "page"),
+    owner: String(log?.owner || ""),
+    ip: String(log?.ip || "-"),
+    method: String(log?.method || "GET"),
+    path: String(log?.path || ""),
+    userAgent: String(log?.userAgent || ""),
+    accessedAt: String(log?.accessedAt || ""),
+    durationMs: Math.max(0, Number(log?.durationMs) || 0),
+    lastSeenAt: String(log?.lastSeenAt || ""),
+    endedAt: String(log?.endedAt || ""),
+    awayAt: String(log?.awayAt || ""),
+    sessionId: String(log?.sessionId || "")
+  })).filter((log) => log.accessedAt).slice(-1000);
+}
+
+function normalizeOperationLogs(value) {
+  const logs = Array.isArray(value) ? value : [];
+  return logs.map((log) => ({
+    id: String(log?.id || randomId()),
+    operator: String(log?.operator || ""),
+    ip: String(log?.ip || "-"),
+    action: String(log?.action || ""),
+    detail: String(log?.detail || ""),
+    path: String(log?.path || ""),
+    operatedAt: String(log?.operatedAt || "")
+  })).filter((log) => log.operator && log.action && log.operatedAt).slice(-1500);
+}
+
 function getPinnedOverviewDefectIds() {
   store.pinnedOverviewDefects = normalizePinnedDefectIds(store.pinnedOverviewDefects);
   return store.pinnedOverviewDefects;
@@ -2175,6 +2756,11 @@ function getPinnedOverviewDefectIds() {
 function getRequirementOverviewDefectIds() {
   store.requirementOverviewDefects = normalizeOverviewDefectIds(store.requirementOverviewDefects);
   return store.requirementOverviewDefects;
+}
+
+function getOverviewDefectDifficulties() {
+  store.overviewDefectDifficulties = normalizeOverviewDefectDifficulties(store.overviewDefectDifficulties);
+  return store.overviewDefectDifficulties;
 }
 
 function getTodayRange() {

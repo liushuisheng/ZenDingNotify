@@ -2,6 +2,8 @@ const state = {
   overview: null,
   defects: [],
   logs: [],
+  accessLogs: [],
+  operationLogs: [],
   config: null,
   assignees: [],
   defectListMode: "all",
@@ -14,19 +16,30 @@ const state = {
   ownerScope: "",
   pinnedOverviewDefects: new Set(),
   requirementOverviewDefects: new Set(),
+  overviewDefectDifficulties: {},
+  activeDifficultyMenu: null,
   guestKnownDefectIds: null,
   notificationOwnerScope: "",
   guestNotificationTestShown: false,
   titleScrollTimer: null,
   originalTitle: document.title,
   activeGuestNotificationCount: 0,
-  authenticated: false
+  authenticated: false,
+  accessVisit: null
 };
+
+const difficultyOptions = [
+  { value: "simple", label: "简单" },
+  { value: "medium", label: "中度" },
+  { value: "hard", label: "困难" }
+];
 
 const titles = {
   overview: ["总览", "当天缺陷处理情况与剩余风险"],
   defects: ["缺陷列表", "查看当前抓取到的缺陷快照"],
   logs: ["推送记录", "查看钉钉推送内容、结果和触发来源"],
+  accessLogs: ["访问日志", "查看总览和个人视角访问记录"],
+  operationLogs: ["操作日志", "查看个人访客的页面操作记录"],
   actions: ["手动推送", "手动触发日报与风险提醒"],
   settings: ["配置", "切换真实禅道数据、钉钉机器人和推送规则"]
 };
@@ -35,6 +48,8 @@ const viewRoutes = {
   overview: "#/overview",
   defects: "#/defects",
   logs: "#/logs",
+  accessLogs: "#/access-logs",
+  operationLogs: "#/operation-logs",
   actions: "#/actions",
   settings: "#/settings"
 };
@@ -95,6 +110,7 @@ document.querySelectorAll(".nav-item").forEach((button) => {
   if (!isAllowed) return;
   button.addEventListener("click", () => {
     switchView(view, { updateRoute: view !== "defects" });
+    logGuestOperation("切换页面", titles[view]?.[0] || view);
     if (view === "defects") {
       if (getViewFromRoute() !== "defects") resetDefectFiltersToDefault();
       renderDefects();
@@ -103,6 +119,12 @@ document.querySelectorAll(".nav-item").forEach((button) => {
 });
 window.addEventListener("hashchange", handleRouteChange);
 window.addEventListener("popstate", handleRouteChange);
+window.addEventListener("beforeunload", () => sendAccessVisitDuration({ beacon: true, ended: true }));
+window.addEventListener("pagehide", () => sendAccessVisitDuration({ beacon: true, ended: true }));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") sendAccessVisitDuration({ beacon: true, away: true });
+  else if (document.visibilityState === "visible") sendAccessVisitDuration();
+});
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeConfirmModal(false);
@@ -132,10 +154,22 @@ async function handleRouteChange() {
 }
 
 document.getElementById("refreshBtn").addEventListener("click", refreshFromZentao);
-document.getElementById("priorityFilter").addEventListener("change", () => renderDefectsFromToolbar({ resetMode: true }));
-document.getElementById("statusFilter").addEventListener("change", () => renderDefectsFromToolbar({ resetMode: true }));
-document.getElementById("openedAgeFilter").addEventListener("change", () => renderDefectsFromToolbar({ resetMode: true }));
-document.getElementById("defectSort").addEventListener("change", () => renderDefects());
+document.getElementById("priorityFilter").addEventListener("change", (event) => {
+  logGuestOperation("筛选优先级", getSelectedText(event.target));
+  renderDefectsFromToolbar({ resetMode: true });
+});
+document.getElementById("statusFilter").addEventListener("change", (event) => {
+  logGuestOperation("筛选状态", getSelectedText(event.target));
+  renderDefectsFromToolbar({ resetMode: true });
+});
+document.getElementById("openedAgeFilter").addEventListener("change", (event) => {
+  logGuestOperation("筛选创建时间", getSelectedText(event.target));
+  renderDefectsFromToolbar({ resetMode: true });
+});
+document.getElementById("defectSort").addEventListener("change", (event) => {
+  logGuestOperation("调整排序", getSelectedText(event.target));
+  renderDefects();
+});
 document.getElementById("copyDefectsBtn").addEventListener("click", copyVisibleDefects);
 document.getElementById("clearDefectCondition").addEventListener("click", clearDefectCondition);
 document.getElementById("resetDefectFiltersBtn").addEventListener("click", resetNormalDefectFilters);
@@ -157,6 +191,7 @@ document.getElementById("loginForm").addEventListener("submit", loginAdmin);
 document.getElementById("logoutBtn").addEventListener("click", logoutAdmin);
 document.getElementById("brandHomeBtn").addEventListener("click", navigateHomeFromBrand);
 document.getElementById("reloadConfigBtn").addEventListener("click", loadConfig);
+document.getElementById("resetGuestPasswordBtn").addEventListener("click", resetGuestPassword);
 document.getElementById("scheduleEnabled").addEventListener("change", toggleSchedulerEnabled);
 document.getElementById("addP1P2Time").addEventListener("click", () => addP1P2TimeInput(""));
 document.querySelectorAll("[data-time-target]").forEach((element) => {
@@ -173,6 +208,8 @@ document.addEventListener("click", (event) => {
   if (!ownerSelect.contains(event.target)) ownerSelect.classList.remove("open");
   const scopeBadge = document.getElementById("ownerScopeBadge");
   if (scopeBadge && !scopeBadge.contains(event.target)) scopeBadge.classList.remove("open");
+  const guestPasswordSelect = document.getElementById("guestPasswordOwnerSelect");
+  if (guestPasswordSelect && !guestPasswordSelect.contains(event.target)) closeGuestPasswordOwnerSelect(guestPasswordSelect);
 });
 
 document.querySelectorAll(".action-card").forEach((button) => {
@@ -264,10 +301,23 @@ function isTextTruncated(element) {
 
 async function initApp() {
   if (guestMode) {
+    if (guestOwner) {
+      try {
+        const session = await getJson(`/api/guest-session?owner=${encodeURIComponent(guestOwner)}`);
+        if (!session.authenticated) {
+          showGuestLoginScreen(session);
+          return;
+        }
+      } catch (error) {
+        showGuestError(error.message || "访客地址不可用");
+        return;
+      }
+    }
     showAppShell();
     switchView(getViewFromRoute(), { updateRoute: false });
     try {
       await loadAll();
+      startAccessVisitTracking();
     } catch (error) {
       showGuestError(error.message || "访客地址不可用");
     }
@@ -301,6 +351,40 @@ function showLoginScreen() {
   document.getElementById("adminPassword").focus();
 }
 
+function showGuestLoginScreen(session) {
+  const loginScreen = document.getElementById("loginScreen");
+  const ownerName = formatGuestOwnerDisplay(session.owner || guestOwner);
+  const initialized = Boolean(session.initialized);
+  state.authenticated = false;
+  document.body.classList.add("login-mode");
+  loginScreen.classList.remove("hidden");
+  loginScreen.innerHTML = `
+    <form class="login-panel" id="guestLoginForm">
+      <div class="brand login-brand">
+        <div class="brand-mark">ZD</div>
+        <div>
+          <strong>${initialized ? "访客访问" : "初始化访客密码"}</strong>
+          <span>${escapeHtml(ownerName)} 的个人视角</span>
+        </div>
+      </div>
+      <label class="field">
+        <span>${initialized ? "访问密码" : "设置访问密码"}</span>
+        <input id="guestPassword" type="password" autocomplete="${initialized ? "current-password" : "new-password"}" autofocus>
+      </label>
+      ${initialized ? "" : `
+      <label class="field">
+        <span>确认访问密码</span>
+        <input id="guestPasswordConfirm" type="password" autocomplete="new-password">
+      </label>`}
+      <button type="submit" class="primary">${initialized ? "进入个人视角" : "设置并进入"}</button>
+      <div id="guestLoginError" class="form-feedback hidden" role="alert"></div>
+      <a class="secondary guest-error-link" href="/guest">返回访客总览</a>
+    </form>
+  `;
+  document.getElementById("guestLoginForm").addEventListener("submit", loginGuestOwner);
+  document.getElementById("guestPassword").focus();
+}
+
 function showAppShell() {
   document.body.classList.remove("login-mode");
   document.getElementById("loginScreen").classList.add("hidden");
@@ -329,6 +413,10 @@ function hasGuestOwnerScope() {
 
 function hasOwnerScope() {
   return Boolean(getActiveOwnerScope());
+}
+
+function canOperateOverviewDefectCards() {
+  return !guestMode || hasGuestOwnerScope();
 }
 
 function getActiveOwnerScope() {
@@ -408,6 +496,39 @@ function getOwnerScopeSwitchOptions() {
     .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
 }
 
+async function loginGuestOwner(event) {
+  event.preventDefault();
+  const error = document.getElementById("guestLoginError");
+  const password = document.getElementById("guestPassword").value;
+  const confirmInput = document.getElementById("guestPasswordConfirm");
+  error.classList.add("hidden");
+  error.textContent = "";
+  if (confirmInput && password !== confirmInput.value) {
+    error.textContent = "两次输入的访问密码不一致";
+    error.classList.remove("hidden");
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/guest-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner: guestOwner, password })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.message || data.error || "访客登录失败");
+    document.getElementById("guestPassword").value = "";
+    if (confirmInput) confirmInput.value = "";
+    showAppShell();
+    switchView(getViewFromRoute(), { updateRoute: false });
+    await loadAll();
+    startAccessVisitTracking();
+  } catch (loginError) {
+    error.textContent = loginError.message;
+    error.classList.remove("hidden");
+  }
+}
+
 async function loginAdmin(event) {
   event.preventDefault();
   const error = document.getElementById("loginError");
@@ -465,22 +586,28 @@ async function navigateHomeFromBrand() {
 }
 
 async function loadAll(options = {}) {
-  const [overview, defects, status, assignees, configData, logs, overviewPins, overviewRequirements] = await Promise.all([
+  const [overview, defects, status, assignees, configData, logs, accessLogs, operationLogs, overviewPins, overviewRequirements, overviewDifficulties] = await Promise.all([
     getJson(scopedApiUrl("/api/overview")),
     getJson(scopedApiUrl("/api/defects")),
     getJson("/api/config-status"),
     guestMode ? Promise.resolve({ assignees: [] }) : getJson("/api/assignees"),
     getJson(guestMode ? "/api/public-config" : "/api/config"),
     guestMode ? Promise.resolve({ logs: [] }) : getJson("/api/push-logs"),
+    guestMode ? Promise.resolve({ logs: [] }) : getJson("/api/access-logs"),
+    guestMode ? Promise.resolve({ logs: [] }) : getJson("/api/operation-logs"),
     getJson("/api/overview-pins"),
-    getJson("/api/overview-requirements")
+    getJson("/api/overview-requirements"),
+    getJson("/api/overview-difficulties")
   ]);
   state.overview = overview;
   state.defects = defects.defects;
   state.pinnedOverviewDefects = new Set((overviewPins.pinned || []).map((id) => String(id)));
   state.requirementOverviewDefects = new Set((overviewRequirements.requirements || []).map((id) => String(id)));
+  state.overviewDefectDifficulties = normalizeOverviewDifficulties(overviewDifficulties.difficulties);
   await notifyGuestOwnerNewDefects(defects.defects, Boolean(options.notifyGuestNewDefects));
   state.logs = logs.logs;
+  state.accessLogs = accessLogs.logs;
+  state.operationLogs = operationLogs.logs;
   state.assignees = assignees.assignees || [];
   state.config = configData.config;
   renderOwnerScopeBadge();
@@ -491,9 +618,81 @@ async function loadAll(options = {}) {
   renderDefects({ updateRoute: state.view === "defects", replaceRoute: true });
   if (!guestMode) {
     renderLogs();
+    renderAccessLogs();
+    renderOperationLogs();
     renderConfig();
   }
   maybeShowGuestNotificationTest();
+}
+
+function startAccessVisitTracking() {
+  if (!guestMode || state.accessVisit) return;
+  state.accessVisit = {
+    sessionId: createClientSessionId(),
+    startedAt: Date.now(),
+    timer: window.setInterval(() => sendAccessVisitDuration(), 15000)
+  };
+  sendAccessVisitDuration();
+}
+
+function sendAccessVisitDuration(options = {}) {
+  if (!guestMode || !state.accessVisit) return;
+  const payload = {
+    sessionId: state.accessVisit.sessionId,
+    owner: getActiveOwnerScope(),
+    path: window.location.pathname,
+    durationMs: Date.now() - state.accessVisit.startedAt,
+    ended: Boolean(options.ended),
+    away: Boolean(options.away)
+  };
+  const body = JSON.stringify(payload);
+  if (options.beacon && navigator.sendBeacon) {
+    navigator.sendBeacon("/api/access-log/visit", new Blob([body], { type: "application/json" }));
+    if (!options.ended) return;
+  }
+  fetch("/api/access-log/visit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+    keepalive: true
+  }).catch(() => {});
+}
+
+function createClientSessionId() {
+  if (crypto?.randomUUID) return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function logGuestOperation(action, detail = "", options = {}) {
+  const canLogAsGuest = hasGuestOwnerScope();
+  const canLogAsAdmin = Boolean(options.allowAdmin) && !guestMode && state.authenticated;
+  if (!canLogAsGuest && !canLogAsAdmin) return;
+  fetch("/api/operation-log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      owner: canLogAsGuest ? getActiveOwnerScope() : "",
+      action,
+      detail,
+      path: window.location.pathname,
+      allowAdmin: canLogAsAdmin
+    }),
+    keepalive: true
+  }).catch(() => {});
+}
+
+function bindDefectTitleOperationLogs() {
+  document.querySelectorAll("[data-defect-title-link]").forEach((link) => {
+    if (link.dataset.operationBound === "true") return;
+    link.dataset.operationBound = "true";
+    link.addEventListener("click", () => {
+      logGuestOperation("查看缺陷详情", `#${link.dataset.defectTitleLink || ""}`);
+    });
+  });
+}
+
+function getSelectedText(select) {
+  return select?.selectedOptions?.[0]?.textContent?.trim() || select?.value || "";
 }
 
 function scopedApiUrl(path) {
@@ -755,7 +954,9 @@ function parseRoute() {
 function switchView(view, options = {}) {
   if (!titles[view] || !allowedViews.includes(view)) view = "overview";
   state.view = view;
-  document.querySelector(".main").classList.toggle("list-mode", ["defects", "logs"].includes(view));
+  document.querySelector(".main").classList.toggle("list-mode", ["defects", "logs", "accessLogs", "operationLogs"].includes(view));
+  document.querySelector(".main").classList.toggle("settings-mode", view === "settings");
+  placeHeroForView(view);
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   document.querySelectorAll(".view").forEach((element) => element.classList.remove("active"));
   document.getElementById(`${view}View`).classList.add("active");
@@ -771,6 +972,18 @@ function switchView(view, options = {}) {
   }
 }
 
+function placeHeroForView(view) {
+  const main = document.querySelector(".main");
+  const hero = document.querySelector(".hero");
+  const settingsScroll = document.querySelector("#settingsView .settings-scroll");
+  if (!main || !hero || !settingsScroll) return;
+  if (view === "settings") {
+    if (hero.parentElement !== settingsScroll) settingsScroll.prepend(hero);
+    return;
+  }
+  if (hero.parentElement !== main) main.insertBefore(hero, main.querySelector(".view"));
+}
+
 function getScopedViewRoute(view) {
   if (!guestMode && state.ownerScope) return `#/${encodeURIComponent(state.ownerScope)}/${view}`;
   return viewRoutes[view];
@@ -783,7 +996,6 @@ function renderStatus(status) {
     <div class="status-row"><span>禅道抓取</span><strong>${status.zentaoEnabled ? "已启用" : "示例数据"}</strong></div>
     <div class="status-row"><span>钉钉推送</span><strong>${status.dingtalkDryRun ? "Dry-run" : "真实发送"}</strong></div>
     <div class="status-row"><span>定时任务</span><strong>${status.schedulerEnabled ? "已开启" : "已关闭"}</strong></div>
-    <div class="status-row"><span>人员映射</span><strong>${status.mappedUsers} 人</strong></div>
   `;
 }
 
@@ -809,6 +1021,7 @@ function renderOverview() {
   if (!overview) return;
 
   const metrics = getOverviewMetrics(overview);
+  const canOperateCards = canOperateOverviewDefectCards();
 
   document.getElementById("metrics").innerHTML = metrics.map(([label, value, tone, mode]) => `
     <button class="metric ${tone}" type="button" data-defect-mode="${mode}">
@@ -821,8 +1034,8 @@ function renderOverview() {
     button.addEventListener("click", () => openDefectList(button.dataset.defectMode));
   });
 
-  document.getElementById("urgentList").innerHTML = renderDefectCards(sortPinnedDefectCards(sortDefectsForDisplay(overview.urgentOpen)), true);
-  document.getElementById("normalList").innerHTML = renderDefectCards(sortPinnedDefectCards(sortDefectsForDisplay(overview.normalOpen)), false);
+  document.getElementById("urgentList").innerHTML = renderDefectCards(sortPinnedDefectCards(sortDefectsForDisplay(overview.urgentOpen)), true, canOperateCards);
+  document.getElementById("normalList").innerHTML = renderDefectCards(sortPinnedDefectCards(sortDefectsForDisplay(overview.normalOpen)), false, canOperateCards);
   document.getElementById("urgentCount").textContent = overview.urgentOpen.length;
   document.getElementById("normalCount").textContent = overview.normalOpen.length;
   document.querySelectorAll("[data-pin-defect]").forEach((button) => {
@@ -839,6 +1052,14 @@ function renderOverview() {
       toggleOverviewDefectRequirement(button.dataset.requirementDefect);
     });
   });
+  document.querySelectorAll("[data-difficulty-defect]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openDifficultyMenu(button, button.dataset.difficultyDefect);
+    });
+  });
+  bindDefectTitleOperationLogs();
 
   const ownerStatsPanel = document.querySelector(".owner-stats-panel");
   ownerStatsPanel?.classList.toggle("hidden", hasOwnerScope());
@@ -891,18 +1112,19 @@ function getOverviewMetrics(overview) {
   ];
 }
 
-function renderDefectCards(defects, urgent) {
+function renderDefectCards(defects, urgent, canOperateCards = false) {
   if (!defects.length) return `<div class="empty">暂无数据</div>`;
   return defects.map((defect) => {
     const ageLabel = getOpenedAgeLabel(defect.openedDate);
     const pinned = isOverviewDefectPinned(defect.id);
     const requirement = isOverviewDefectRequirement(defect.id);
+    const difficulty = getOverviewDefectDifficulty(defect.id);
     return `
     <article class="defect-item ${urgent ? "urgent" : ""} ${isFatal(defect) ? "fatal" : ""} ${ageLabel === "超期" ? "overdue" : ""} ${pinned ? "pinned" : ""}">
       <div class="defect-title">
         <span class="defect-id">#${escapeHtml(defect.id)}</span>
-        <a class="defect-title-text" href="${escapeHtml(defect.url || "#")}" target="_blank" rel="noreferrer" title="#${escapeHtml(defect.id)} ${escapeHtml(defect.title)}">${escapeHtml(defect.title)}</a>
-        <button class="pin-defect-button ${pinned ? "active" : ""}" type="button" data-pin-defect="${escapeHtml(defect.id)}" title="${pinned ? "取消置顶" : "置顶"}" aria-label="${pinned ? "取消置顶" : "置顶"}">
+        <a class="defect-title-text" href="${escapeHtml(defect.url || "#")}" target="_blank" rel="noreferrer" data-defect-title-link="${escapeHtml(defect.id)}" title="#${escapeHtml(defect.id)} ${escapeHtml(defect.title)}">${escapeHtml(defect.title)}</a>
+        ${canOperateCards ? `<button class="pin-defect-button ${pinned ? "active" : ""}" type="button" data-pin-defect="${escapeHtml(defect.id)}" title="${pinned ? "取消置顶" : "置顶"}" aria-label="${pinned ? "取消置顶" : "置顶"}">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path class="pin-top-bar" d="M6 4h12" />
             <path class="pin-top-arrow" d="M12 19V8" />
@@ -919,10 +1141,19 @@ function renderDefectCards(defects, urgent) {
             <path d="M14.5 10 20 4.5" />
           </svg>
         </button>
+        <button class="difficulty-defect-button ${difficulty ? "active" : ""}" type="button" data-difficulty-defect="${escapeHtml(defect.id)}" title="${difficulty ? `修复难度：${escapeHtml(getDifficultyLabel(difficulty))}` : "标记修复难度"}" aria-label="标记修复难度">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 19h16" />
+            <path d="M6 16V9" />
+            <path d="M12 16V5" />
+            <path d="M18 16v-4" />
+          </svg>
+        </button>` : ""}
       </div>
       <div class="meta">
         ${pinned ? `<span class="pill pinned">置顶</span>` : ""}
         ${requirement ? `<span class="pill requirement">需求</span>` : ""}
+        ${difficulty ? `<span class="pill difficulty ${escapeHtml(difficulty)}">${escapeHtml(getDifficultyLabel(difficulty))}</span>` : ""}
         ${isFatal(defect) ? `<span class="pill fatal">致命</span>` : ""}
         ${renderNewPendingPill(defect)}
         ${renderTransferredInPill(defect)}
@@ -952,6 +1183,27 @@ function isOverviewDefectRequirement(id) {
   return state.requirementOverviewDefects.has(String(id));
 }
 
+function getOverviewDefectDifficulty(id) {
+  return normalizeDifficulty(state.overviewDefectDifficulties[String(id)] || "");
+}
+
+function normalizeDifficulty(value) {
+  const text = String(value || "").trim();
+  return difficultyOptions.some((option) => option.value === text) ? text : "";
+}
+
+function getDifficultyLabel(value) {
+  return difficultyOptions.find((option) => option.value === value)?.label || "";
+}
+
+function normalizeOverviewDifficulties(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).map(([id, difficulty]) => [
+    String(id || "").trim(),
+    normalizeDifficulty(difficulty)
+  ]).filter(([id, difficulty]) => id && difficulty));
+}
+
 async function toggleOverviewDefectPin(id) {
   const key = String(id || "");
   if (!key) return;
@@ -961,6 +1213,7 @@ async function toggleOverviewDefectPin(id) {
   renderOverview();
   try {
     await saveOverviewPins();
+    logGuestOperation(state.pinnedOverviewDefects.has(key) ? "标记置顶" : "取消置顶", `#${key}`, { allowAdmin: true });
   } catch (error) {
     state.pinnedOverviewDefects = previousPinned;
     renderOverview();
@@ -969,7 +1222,7 @@ async function toggleOverviewDefectPin(id) {
 }
 
 async function saveOverviewPins() {
-  const response = await fetch("/api/overview-pins", {
+  const response = await fetch(overviewOperationUrl("/api/overview-pins"), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pinned: [...state.pinnedOverviewDefects] })
@@ -997,6 +1250,7 @@ async function toggleOverviewDefectRequirement(id) {
   renderOverview();
   try {
     await saveOverviewRequirements();
+    logGuestOperation(removing ? "取消需求标记" : "标记为需求", `#${key}`, { allowAdmin: true });
   } catch (error) {
     state.requirementOverviewDefects = previousRequirements;
     renderOverview();
@@ -1005,7 +1259,7 @@ async function toggleOverviewDefectRequirement(id) {
 }
 
 async function saveOverviewRequirements() {
-  const response = await fetch("/api/overview-requirements", {
+  const response = await fetch(overviewOperationUrl("/api/overview-requirements"), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ requirements: [...state.requirementOverviewDefects] })
@@ -1013,6 +1267,100 @@ async function saveOverviewRequirements() {
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.ok === false) throw new Error(data.message || data.error || "需求标记保存失败");
   state.requirementOverviewDefects = new Set((data.requirements || []).map((id) => String(id)));
+}
+
+function openDifficultyMenu(button, id) {
+  const key = String(id || "");
+  if (!key) return;
+  closeDifficultyMenu();
+
+  const current = getOverviewDefectDifficulty(key);
+  const menu = document.createElement("div");
+  menu.className = "difficulty-menu";
+  menu.dataset.difficultyMenu = key;
+  menu.innerHTML = `
+    ${difficultyOptions.map((option) => `
+      <button class="${current === option.value ? "active" : ""}" type="button" data-difficulty-value="${escapeHtml(option.value)}">
+        <span class="difficulty-dot ${escapeHtml(option.value)}"></span>
+        <span>${escapeHtml(option.label)}</span>
+      </button>
+    `).join("")}
+    ${current ? `<button class="muted" type="button" data-difficulty-value="">清除标记</button>` : ""}
+  `;
+  document.body.appendChild(menu);
+  state.activeDifficultyMenu = menu;
+  positionDifficultyMenu(menu, button);
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-difficulty-value]");
+    if (!option) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setOverviewDefectDifficulty(key, option.dataset.difficultyValue);
+  });
+  window.setTimeout(() => {
+    document.addEventListener("click", closeDifficultyMenuOnOutside, true);
+    window.addEventListener("scroll", closeDifficultyMenu, true);
+    window.addEventListener("resize", closeDifficultyMenu, { once: true });
+  }, 0);
+}
+
+function positionDifficultyMenu(menu, button) {
+  const rect = button.getBoundingClientRect();
+  const width = 128;
+  const gap = 6;
+  const left = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8);
+  const top = Math.min(rect.bottom + gap, window.innerHeight - menu.offsetHeight - 8);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+}
+
+function closeDifficultyMenuOnOutside(event) {
+  if (event.target.closest(".difficulty-menu") || event.target.closest("[data-difficulty-defect]")) return;
+  closeDifficultyMenu();
+}
+
+function closeDifficultyMenu() {
+  if (state.activeDifficultyMenu) state.activeDifficultyMenu.remove();
+  state.activeDifficultyMenu = null;
+  document.removeEventListener("click", closeDifficultyMenuOnOutside, true);
+  window.removeEventListener("scroll", closeDifficultyMenu, true);
+}
+
+async function setOverviewDefectDifficulty(id, difficulty) {
+  const key = String(id || "");
+  if (!key) return;
+  const nextDifficulty = normalizeDifficulty(difficulty);
+  const previousDifficulties = { ...state.overviewDefectDifficulties };
+  closeDifficultyMenu();
+  state.overviewDefectDifficulties = { ...state.overviewDefectDifficulties };
+  if (nextDifficulty) state.overviewDefectDifficulties[key] = nextDifficulty;
+  else delete state.overviewDefectDifficulties[key];
+  renderOverview();
+  try {
+    await saveOverviewDifficulties();
+    logGuestOperation(nextDifficulty ? "标记修复难度" : "清除修复难度", nextDifficulty ? `#${key} ${getDifficultyLabel(nextDifficulty)}` : `#${key}`, { allowAdmin: true });
+  } catch (error) {
+    state.overviewDefectDifficulties = previousDifficulties;
+    renderOverview();
+    showToast(error.message || "修复难度保存失败", "error");
+  }
+}
+
+async function saveOverviewDifficulties() {
+  const response = await fetch(overviewOperationUrl("/api/overview-difficulties"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ difficulties: state.overviewDefectDifficulties })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) throw new Error(data.message || data.error || "修复难度保存失败");
+  state.overviewDefectDifficulties = normalizeOverviewDifficulties(data.difficulties);
+}
+
+function overviewOperationUrl(path) {
+  if (!hasGuestOwnerScope()) return path;
+  const params = new URLSearchParams({ owner: getActiveOwnerScope() });
+  return `${path}?${params.toString()}`;
 }
 
 function ownerStatButton(owner, mode, value) {
@@ -1117,6 +1465,7 @@ function renderDefects(options = {}) {
   if (state.view === "defects" && options.updateRoute !== false) {
     updateDefectRoute(Boolean(options.replaceRoute));
   }
+  bindDefectTitleOperationLogs();
 }
 
 function renderDefectsFromToolbar(options = {}) {
@@ -1138,12 +1487,14 @@ function clearDefectCondition() {
   resetDefectFiltersToDefault();
   renderOwnerFilterOptions();
   renderDefects();
+  logGuestOperation("清除缺陷筛选");
 }
 
 function resetNormalDefectFilters() {
   resetDefectFiltersToDefault();
   renderOwnerFilterOptions();
   renderDefects();
+  logGuestOperation("重置缺陷筛选");
 }
 
 function renderDefectConditionBar() {
@@ -1383,6 +1734,7 @@ async function copyVisibleDefects() {
   try {
     await copyText(text);
     showToast(`已复制 ${defects.length} 条缺陷`);
+    logGuestOperation("复制缺陷列表", `${defects.length} 条`);
   } catch (error) {
     showToast(error.message || "复制失败", "error");
   }
@@ -1499,6 +1851,7 @@ function openDefectList(mode) {
   else statusFilter.value = "all";
   switchView("defects", { updateRoute: false });
   renderDefects();
+  logGuestOperation("查看缺陷列表", defectModeText(mode));
 }
 
 function openOwnerDefectList(mode, owner) {
@@ -1514,6 +1867,31 @@ function openOwnerDefectList(mode, owner) {
   else statusFilter.value = ["ownerOpen", "ownerUrgent", "ownerNormal"].includes(mode) ? "active" : "all";
   switchView("defects", { updateRoute: false });
   renderDefects();
+}
+
+function defectModeText(mode) {
+  const texts = {
+    all: "全部缺陷",
+    open: "未完成总数",
+    urgent: "P1/P2 未完成",
+    normal: "非 P1/P2 未完成",
+    resolvedPendingVerify: "已解决待验证",
+    abnormal: "异常数据",
+    todayAdded: "今日新增",
+    todayResolved: "今日解决",
+    todayClosed: "今日关闭",
+    todayTransferred: "今日转出",
+    todayReturned: "今日转入",
+    ownerOpen: "负责人未完成",
+    ownerUrgent: "负责人 P1/P2 未完成",
+    ownerNormal: "负责人非 P1/P2 未完成",
+    ownerPendingTest: "负责人已解决待验证",
+    ownerTodayAdded: "负责人今日新增",
+    ownerTodayResolved: "负责人今日解决",
+    ownerTodayTransferred: "负责人今日转出",
+    ownerTodayReturned: "负责人今日转入"
+  };
+  return texts[mode] || mode || "-";
 }
 
 function applyStatusFilter(defects, status) {
@@ -1576,7 +1954,7 @@ function renderLogs() {
               <td>${escapeHtml(log.title)}</td>
               <td>${log.ok ? badge("success", log.dryRun ? "Dry-run 成功" : "成功") : badge("urgent", `失败：${log.error}`)}</td>
               <td>${escapeHtml(triggerText(log.trigger))}</td>
-              <td>${escapeHtml((log.mobiles || []).join(", ") || "-")}</td>
+              <td>${escapeHtml(getLogAtText(log))}</td>
               <td>${escapeHtml((log.defectIds || []).length)}</td>
             </tr>
           `).join("")}
@@ -1593,6 +1971,154 @@ function renderLogs() {
   });
 }
 
+function getLogAtText(log) {
+  if (log.atAll) return "所有人";
+  return (log.mobiles || []).join(", ") || "-";
+}
+
+function renderAccessLogs() {
+  const logs = getRecentAccessLogs();
+  document.getElementById("accessLogsTable").innerHTML = `
+    <div class="table-scroll is-scrollable">
+      <table class="access-logs-data-table">
+        <thead>
+          <tr>
+            <th>访问时间</th>
+            <th>访问时长</th>
+            <th>会话状态</th>
+            <th>IP</th>
+            <th>访问对象</th>
+            <th>类型</th>
+            <th>路径</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${logs.length ? logs.map((log) => `
+            <tr>
+              <td>${escapeHtml(formatTime(log.accessedAt))}</td>
+              <td>${escapeHtml(formatDuration(log.durationMs))}</td>
+              <td>${sessionStatusBadge(log.sessionStatus)}</td>
+              <td>${escapeHtml(log.ip || "-")}</td>
+              <td>${escapeHtml(log.owner || "总览")}</td>
+              <td>${escapeHtml(accessLogTypeText(log.type))}</td>
+              <td>${escapeHtml(log.path || "-")}</td>
+            </tr>
+          `).join("") : `
+            <tr>
+              <td class="table-empty" colspan="7">暂无访问记录</td>
+            </tr>
+          `}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function getRecentAccessLogs() {
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  return [...(state.accessLogs || [])]
+    .filter((log) => {
+      const time = new Date(log.accessedAt).getTime();
+      return Number.isFinite(time) && time >= since;
+    })
+    .sort((a, b) => new Date(b.accessedAt).getTime() - new Date(a.accessedAt).getTime())
+    .slice(0, 200);
+}
+
+function accessLogTypeText(type) {
+  if (type === "page") return "页面访问";
+  return type || "-";
+}
+
+function sessionStatusBadge(status) {
+  if (status === "online") return `<span class="session-status online">正在访问</span>`;
+  if (status === "away") return `<span class="session-status away">暂时离开</span>`;
+  return `<span class="session-status ended">已结束</span>`;
+}
+
+function formatDuration(value) {
+  const ms = Number(value) || 0;
+  if (ms <= 0) return "-";
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}秒`;
+  const minutes = Math.floor(seconds / 60);
+  const remainSeconds = seconds % 60;
+  if (minutes < 60) return remainSeconds ? `${minutes}分${remainSeconds}秒` : `${minutes}分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainMinutes = minutes % 60;
+  return remainMinutes ? `${hours}小时${remainMinutes}分` : `${hours}小时`;
+}
+
+function renderOperationLogs() {
+  const logs = getRecentOperationLogs();
+  document.getElementById("operationLogsTable").innerHTML = `
+    <div class="table-scroll is-scrollable">
+      <table class="operation-logs-data-table">
+        <thead>
+          <tr>
+            <th>操作时间</th>
+            <th>IP</th>
+            <th>操作人</th>
+            <th>操作行为</th>
+            <th>操作页面</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${logs.length ? logs.map((log) => `
+            <tr>
+              <td>${escapeHtml(formatTime(log.operatedAt))}</td>
+              <td>${escapeHtml(log.ip || "-")}</td>
+              <td>${escapeHtml(log.operator || "-")}</td>
+              <td>${formatOperationAction(log)}</td>
+              <td>${escapeHtml(log.path || "-")}</td>
+            </tr>
+          `).join("") : `
+            <tr>
+              <td class="table-empty" colspan="5">暂无操作记录</td>
+            </tr>
+          `}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function getRecentOperationLogs() {
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  return [...(state.operationLogs || [])]
+    .filter((log) => {
+      const time = new Date(log.operatedAt).getTime();
+      return Number.isFinite(time) && time >= since;
+    })
+    .sort((a, b) => new Date(b.operatedAt).getTime() - new Date(a.operatedAt).getTime())
+    .slice(0, 300);
+}
+
+function formatOperationAction(log) {
+  const action = escapeHtml(log.action || "-");
+  const detail = formatOperationDetail(log.detail);
+  return detail ? `${action}：${detail}` : action;
+}
+
+function formatOperationDetail(detail) {
+  const text = String(detail || "").trim();
+  if (!text) return "";
+  return escapeHtml(text).replace(/#(\d+)/g, (_match, id) => {
+    const url = getDefectUrlById(id);
+    if (!url) return `#${id}`;
+    return `<a class="operation-defect-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">#${id}</a>`;
+  });
+}
+
+function getDefectUrlById(id) {
+  const key = String(id || "").trim();
+  if (!key) return "";
+  const defect = (state.defects || []).find((item) => String(item.id) === key);
+  if (defect?.url) return defect.url;
+  const baseUrl = String(state.config?.zentao?.baseUrl || "").replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/bug-view-${encodeURIComponent(key)}.html` : "";
+}
+
 function openLogModal(log) {
   state.selectedLogId = log.id;
   document.querySelectorAll(".clickable-row").forEach((row) => {
@@ -1600,8 +2126,15 @@ function openLogModal(log) {
   });
   document.getElementById("logModalTitle").textContent = "推送内容";
   document.getElementById("logModalMeta").textContent = `${log.title || pushTypeText(log.type)} · ${formatTime(log.createdAt)}`;
+  document.getElementById("logPreviewTime").textContent = formatDingPreviewTime(log.createdAt);
   document.getElementById("logModalContent").innerHTML = renderMarkdown(log.text || "");
   document.getElementById("logModal").classList.remove("hidden");
+}
+
+function formatDingPreviewTime(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  return `${String(date.getMonth() + 1).padStart(2, "0")}月${String(date.getDate()).padStart(2, "0")}日 ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function closeLogModal() {
@@ -1645,52 +2178,74 @@ function getRecentPushLogs() {
 function renderMarkdown(markdown) {
   const lines = String(markdown || "").split(/\r?\n/);
   const html = [];
-  let listOpen = false;
+  let listType = "";
+
+  const closeList = () => {
+    if (!listType) return;
+    html.push(`</${listType}>`);
+    listType = "";
+  };
+
+  const openList = (type) => {
+    if (listType === type) return;
+    closeList();
+    html.push(`<${type}>`);
+    listType = type;
+  };
 
   lines.forEach((line) => {
+    const indented = /^\s{2,}\S/.test(line);
     const text = line.trim();
     if (!text) {
-      if (listOpen) {
-        html.push("</ul>");
-        listOpen = false;
-      }
+      closeList();
       return;
     }
 
     const heading = text.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
-      if (listOpen) {
-        html.push("</ul>");
-        listOpen = false;
-      }
+      closeList();
       const level = Math.min(heading[1].length, 4);
       html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
       return;
     }
 
+    const quote = text.match(/^>\s?(.+)$/);
+    if (quote) {
+      closeList();
+      html.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`);
+      return;
+    }
+
+    const orderedItem = text.match(/^\d+\.\s+(.+)$/);
+    if (orderedItem) {
+      openList("ol");
+      html.push(`<li>${renderInlineMarkdown(orderedItem[1])}</li>`);
+      return;
+    }
+
     const listItem = text.match(/^[-*]\s+(.+)$/);
     if (listItem) {
-      if (!listOpen) {
-        html.push("<ul>");
-        listOpen = true;
-      }
+      openList("ul");
       html.push(`<li>${renderInlineMarkdown(listItem[1])}</li>`);
       return;
     }
 
-    if (listOpen) {
-      html.push("</ul>");
-      listOpen = false;
+    if (indented && listType && html.length) {
+      html[html.length - 1] = html[html.length - 1].replace(/<\/li>$/, ` ${renderInlineMarkdown(text)}</li>`);
+      return;
     }
+
+    closeList();
     html.push(`<p>${renderInlineMarkdown(text)}</p>`);
   });
 
-  if (listOpen) html.push("</ul>");
+  closeList();
   return html.join("");
 }
 
 function renderInlineMarkdown(value) {
   return escapeHtml(value)
+    .replace(/&lt;br\s*\/?&gt;/gi, "<br>")
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/`(.+?)`/g, "<code>$1</code>")
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
@@ -1719,16 +2274,77 @@ function renderConfig() {
   document.getElementById("ruleUrgentPriorities").value = (config.rules.urgentPriorities || []).join(",");
   renderAssigneePicker(config.rules.assignees || []);
   document.getElementById("dingDryRun").checked = config.dingtalk.dryRun !== false;
+  document.getElementById("dingAtAll").checked = Boolean(config.dingtalk.atAll);
   document.getElementById("dingWebhook").value = config.dingtalk.webhook || config.dingtalk.accessToken || "";
   document.getElementById("dingSecret").value = config.dingtalk.secret || "";
   document.getElementById("scheduleEnabled").checked = config.scheduler?.enabled !== false;
-  document.getElementById("scheduleYesterdayEnabled").checked = config.scheduler?.rules?.yesterday !== false;
   document.getElementById("scheduleP1P2Enabled").checked = config.scheduler?.rules?.p1p2 !== false;
   document.getElementById("scheduleFetchMinutes").value = config.scheduler?.fetchEveryMinutes || config.scheduler?.ruleFetchEveryMinutes || 5;
-  document.getElementById("scheduleYesterdayTime").value = config.scheduler.yesterdayReportTime || "09:40";
   renderP1P2TimeInputs(config.scheduler.p1p2ReportTimes || [config.scheduler.p1p2ReportTime || "18:00"]);
-  document.getElementById("userMappings").value = JSON.stringify(config.userMappings || {}, null, 2);
   document.getElementById("adminToken").value = config.auth?.adminToken || "";
+  renderGuestPasswordOwnerOptions(config.rules.assignees || []);
+}
+
+function renderGuestPasswordOwnerOptions(assignees) {
+  const select = document.getElementById("guestPasswordOwnerSelect");
+  if (!select) return;
+  const options = (assignees || [])
+    .map((name) => ({ name, account: getGuestAccountAlias(name) }))
+    .filter((option) => option.account)
+    .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
+  const current = options.find((option) => option.account === select.dataset.value) || options[0];
+  select.dataset.value = current?.account || "";
+  select.dataset.label = current?.name || "";
+  select.classList.toggle("disabled", !options.length);
+  select.innerHTML = `
+    <button type="button" class="guest-password-owner-trigger" ${options.length ? "" : "disabled"}>
+      <span>${escapeHtml(current?.name || "暂无可重置人员")}</span>
+      <svg viewBox="0 0 20 20" aria-hidden="true">
+        <path d="M5 7.5 10 12.5 15 7.5" />
+      </svg>
+    </button>
+    <div class="guest-password-owner-menu">
+      ${options.map((option) => `
+        <button class="${option.account === current?.account ? "active" : ""}" type="button" data-guest-owner="${escapeHtml(option.account)}" data-guest-owner-name="${escapeHtml(option.name)}">
+          ${escapeHtml(option.name)}
+        </button>
+      `).join("")}
+    </div>
+  `;
+  select.querySelector(".guest-password-owner-trigger")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (!options.length) return;
+    if (select.classList.contains("open")) closeGuestPasswordOwnerSelect(select);
+    else openGuestPasswordOwnerSelect(select);
+  });
+  select.querySelectorAll("[data-guest-owner]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      select.dataset.value = button.dataset.guestOwner || "";
+      select.dataset.label = button.dataset.guestOwnerName || "";
+      closeGuestPasswordOwnerSelect(select);
+      renderGuestPasswordOwnerOptions(assignees);
+    });
+  });
+  const button = document.getElementById("resetGuestPasswordBtn");
+  if (button) button.disabled = !options.length;
+}
+
+function openGuestPasswordOwnerSelect(select) {
+  select.classList.add("open");
+  select.classList.remove("open-up");
+  const trigger = select.querySelector(".guest-password-owner-trigger");
+  const menu = select.querySelector(".guest-password-owner-menu");
+  if (!trigger || !menu) return;
+  const triggerRect = trigger.getBoundingClientRect();
+  const menuHeight = Math.min(menu.scrollHeight, 260);
+  const spaceBelow = window.innerHeight - triggerRect.bottom - 10;
+  const spaceAbove = triggerRect.top - 10;
+  select.classList.toggle("open-up", spaceBelow < menuHeight && spaceAbove > spaceBelow);
+}
+
+function closeGuestPasswordOwnerSelect(select) {
+  select.classList.remove("open", "open-up");
 }
 
 function renderP1P2TimeInputs(times) {
@@ -1801,8 +2417,8 @@ async function toggleSchedulerEnabled(event) {
     renderStatus({
       zentaoEnabled: Boolean(state.config.zentao.enabled),
       dingtalkDryRun: Boolean(state.config.dingtalk.dryRun),
-      schedulerEnabled: data.scheduler.enabled !== false,
-      mappedUsers: Object.keys(state.config.userMappings || {}).length
+      dingtalkAtAll: Boolean(state.config.dingtalk.atAll),
+      schedulerEnabled: data.scheduler.enabled !== false
     });
     showToast(enabled ? "定时任务已开启" : "定时任务已关闭");
   } catch (error) {
@@ -1839,20 +2455,38 @@ async function toggleSchedulerRule(event) {
   }
 }
 
+async function resetGuestPassword() {
+  const select = document.getElementById("guestPasswordOwnerSelect");
+  const owner = select?.dataset.value || "";
+  const ownerName = select?.dataset.label || owner;
+  if (!owner) return;
+  const confirmed = await requestConfirm({
+    title: "重置访客密码",
+    message: `确认重置 ${ownerName} 的访客访问密码吗？重置后该人员下次访问个人页面需要重新设置初始化密码。`,
+    confirmText: "确认重置"
+  });
+  if (!confirmed) return;
+
+  try {
+    const response = await fetch("/api/guest-passwords/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.message || data.error || "访客密码重置失败");
+    showToast(`${ownerName} 的访客密码已重置`);
+  } catch (error) {
+    showToast(error.message || "访客密码重置失败", "error");
+  }
+}
+
 async function saveConfig(event) {
   event.preventDefault();
   const result = document.getElementById("configResult");
   result.classList.add("hidden");
   result.textContent = "";
   showToast("配置保存中...");
-
-  let userMappings;
-  try {
-    userMappings = JSON.parse(document.getElementById("userMappings").value || "{}");
-  } catch {
-    showToast("人员映射 JSON 格式不正确，请检查后再保存。", "error");
-    return;
-  }
 
   const config = {
     zentao: {
@@ -1872,20 +2506,18 @@ async function saveConfig(event) {
     },
     dingtalk: {
       dryRun: document.getElementById("dingDryRun").checked,
+      atAll: document.getElementById("dingAtAll").checked,
       webhook: document.getElementById("dingWebhook").value,
       secret: document.getElementById("dingSecret").value
     },
     scheduler: {
       enabled: document.getElementById("scheduleEnabled").checked,
       fetchEveryMinutes: Number(document.getElementById("scheduleFetchMinutes").value) || 5,
-      yesterdayReportTime: document.getElementById("scheduleYesterdayTime").value || "09:40",
       p1p2ReportTimes: getP1P2ReportTimesFromForm(),
       rules: {
-        yesterday: document.getElementById("scheduleYesterdayEnabled").checked,
         p1p2: document.getElementById("scheduleP1P2Enabled").checked
       }
     },
-    userMappings,
     auth: {
       adminToken: document.getElementById("adminToken").value
     }
@@ -2090,7 +2722,7 @@ function titledText(text) {
 }
 
 function titleLink(defect) {
-  return `<a class="ellipsis-cell title-link" href="${escapeHtml(defect.url || "#")}" target="_blank" rel="noreferrer" title="${escapeHtml(defect.title)}">${escapeHtml(defect.title)}</a>`;
+  return `<a class="ellipsis-cell title-link" href="${escapeHtml(defect.url || "#")}" target="_blank" rel="noreferrer" data-defect-title-link="${escapeHtml(defect.id)}" title="${escapeHtml(defect.title)}">${escapeHtml(defect.title)}</a>`;
 }
 
 function pushTypeText(type) {

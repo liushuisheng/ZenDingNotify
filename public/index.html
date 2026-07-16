@@ -37,6 +37,8 @@
       <nav>
         <button class="nav-item active" data-view="overview"><span>总览</span></button>
         <button class="nav-item" data-view="defects"><span>缺陷列表</span></button>
+        <button class="nav-item" data-view="accessLogs"><span>访问日志</span></button>
+        <button class="nav-item" data-view="operationLogs"><span>操作日志</span></button>
         <button class="nav-item" data-view="logs"><span>推送记录</span></button>
         <button class="nav-item" data-view="actions"><span>手动推送</span></button>
         <button class="nav-item" data-view="settings"><span>配置</span></button>
@@ -165,13 +167,20 @@
         </section>
       </section>
 
+      <section id="accessLogsView" class="view">
+        <section class="panel">
+          <div id="accessLogsTable"></div>
+        </section>
+      </section>
+
+      <section id="operationLogsView" class="view">
+        <section class="panel">
+          <div id="operationLogsTable"></div>
+        </section>
+      </section>
+
       <section id="actionsView" class="view">
         <div class="action-grid">
-          <button class="action-card" data-action="/api/actions/push/yesterday">
-            <span class="action-icon">9:40</span>
-            <strong>昨日处理日报</strong>
-            <span>模拟每天 09:40 的日报</span>
-          </button>
           <button class="action-card danger" data-action="/api/actions/push/p1p2">
             <span class="action-icon">18:00</span>
             <strong>P1/P2 风险提醒</strong>
@@ -197,9 +206,12 @@
                 </div>
               </div>
               <div class="form-grid">
-                <label class="field toggle-field">
-                  <input type="checkbox" id="zentaoEnabled">
+                <label class="setting-switch-option">
                   <span>启用真实禅道抓取</span>
+                  <span class="switch-field">
+                    <input type="checkbox" id="zentaoEnabled">
+                    <span class="switch-track" aria-hidden="true"></span>
+                  </span>
                 </label>
                 <label class="field">
                   <span>禅道地址</span>
@@ -262,19 +274,33 @@
                   <p>填写机器人 Webhook；开启加签时再填写 Secret</p>
                 </div>
               </div>
-              <div class="form-grid">
-                <label class="field toggle-field">
-                  <input type="checkbox" id="dingDryRun">
-                  <span>Dry-run 模式</span>
-                </label>
-                <label class="field wide">
-                  <span>Webhook</span>
-                  <input id="dingWebhook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=...">
-                </label>
-                <label class="field wide">
-                  <span>加签 Secret</span>
-                  <input id="dingSecret" type="password">
-                </label>
+              <div class="dingtalk-config">
+                <div class="dingtalk-options">
+                  <label class="dingtalk-switch-option">
+                    <span>Dry-run 模式</span>
+                    <span class="switch-field">
+                      <input type="checkbox" id="dingDryRun">
+                      <span class="switch-track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="dingtalk-switch-option">
+                    <span>群内 @所有人</span>
+                    <span class="switch-field">
+                      <input type="checkbox" id="dingAtAll">
+                      <span class="switch-track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                </div>
+                <div class="dingtalk-input-grid">
+                  <label class="field">
+                    <span>Webhook</span>
+                    <input id="dingWebhook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=...">
+                  </label>
+                  <label class="field">
+                    <span>加签 Secret</span>
+                    <input id="dingSecret" type="password">
+                  </label>
+                </div>
               </div>
             </section>
 
@@ -296,16 +322,6 @@
                   <span>自动抓取间隔分钟</span>
                   <input id="scheduleFetchMinutes" type="number" min="1">
                 </label>
-                <div class="schedule-rule-field time-picker-trigger" data-time-target="scheduleYesterdayTime">
-                  <label class="field">
-                    <span>昨日日报时间</span>
-                    <input id="scheduleYesterdayTime" type="time">
-                  </label>
-                  <label class="switch-field" title="开启或关闭昨日日报推送">
-                    <input type="checkbox" id="scheduleYesterdayEnabled" data-scheduler-rule="yesterday">
-                    <span class="switch-track" aria-hidden="true"></span>
-                  </label>
-                </div>
                 <div class="schedule-rule-field">
                   <div class="field">
                     <div class="field-label-row">
@@ -325,21 +341,8 @@
             <section class="panel form-panel">
               <div class="panel-head">
                 <div>
-                  <h2>人员映射</h2>
-                  <p>JSON 格式，禅道账号映射到钉钉手机号</p>
-                </div>
-              </div>
-              <label class="field">
-                <span>映射 JSON</span>
-                <textarea id="userMappings" rows="10" spellcheck="false"></textarea>
-              </label>
-            </section>
-
-            <section class="panel form-panel">
-              <div class="panel-head">
-                <div>
                   <h2>后台访问</h2>
-                  <p>用于进入管理后台；访客地址不需要密码</p>
+                  <p>用于进入管理后台和管理个人访客访问</p>
                 </div>
               </div>
               <div class="form-grid">
@@ -347,6 +350,19 @@
                   <span>管理员密码</span>
                   <input id="adminToken" type="password" autocomplete="new-password">
                 </label>
+                <div class="guest-password-reset">
+                  <div class="guest-password-reset-head">
+                    <strong>访客密码重置</strong>
+                    <span>重置后，该人员下次访问个人页需要重新设置初始化密码</span>
+                  </div>
+                  <div class="guest-password-reset-row">
+                    <div class="field">
+                      <span>人员</span>
+                      <div class="guest-password-owner-select" id="guestPasswordOwnerSelect"></div>
+                    </div>
+                    <button type="button" class="secondary reset-guest-password-button" id="resetGuestPasswordBtn">重置密码</button>
+                  </div>
+                </div>
               </div>
             </section>
           </div>
@@ -376,7 +392,7 @@
       </section>
     </div>
     <div id="logModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="logModalTitle">
-      <section class="modal-panel">
+      <section class="modal-panel log-preview-panel">
         <div class="modal-head">
           <div>
             <strong id="logModalTitle">推送内容</strong>
@@ -384,7 +400,17 @@
           </div>
           <button type="button" class="modal-close" id="closeLogModal" aria-label="关闭">×</button>
         </div>
-        <div id="logModalContent" class="markdown-content"></div>
+        <div class="ding-message-preview">
+          <div class="ding-avatar" aria-hidden="true">ZD</div>
+          <div class="ding-message-main">
+            <div class="ding-message-meta">
+              <span>缺陷哨兵</span>
+              <em>机器人</em>
+              <time id="logPreviewTime"></time>
+            </div>
+            <div id="logModalContent" class="markdown-content ding-message-card"></div>
+          </div>
+        </div>
       </section>
     </div>
     <script src="/app.js"></script>
