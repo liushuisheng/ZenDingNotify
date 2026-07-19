@@ -12,6 +12,7 @@ const state = {
   selectedLogId: null,
   lastFetchAt: "",
   fetching: false,
+  loadingOverview: false,
   view: "overview",
   ownerScope: "",
   pinnedOverviewDefects: new Set(),
@@ -319,9 +320,9 @@ async function initApp() {
     }
     showAppShell();
     switchView(getViewFromRoute(), { updateRoute: false });
+    startAccessVisitTracking();
     try {
       await loadAll();
-      startAccessVisitTracking();
     } catch (error) {
       showGuestError(error.message || "访客地址不可用");
     }
@@ -336,7 +337,13 @@ async function initApp() {
       state.ownerScope = parseRoute().owner || "";
       updateOwnerScopeUi();
       switchView(getViewFromRoute(), { updateRoute: false });
-      await loadAll();
+      try {
+        await loadAll();
+      } catch (error) {
+        renderCurrentRole();
+        renderLastSyncTime();
+        showToast(error.message || "数据加载失败，已保留上一次数据", "error");
+      }
       return;
     }
   } catch {
@@ -525,8 +532,8 @@ async function loginGuestOwner(event) {
     if (confirmInput) confirmInput.value = "";
     showAppShell();
     switchView(getViewFromRoute(), { updateRoute: false });
-    await loadAll();
     startAccessVisitTracking();
+    await loadAll();
   } catch (loginError) {
     error.textContent = loginError.message;
     error.classList.remove("hidden");
@@ -590,7 +597,12 @@ async function navigateHomeFromBrand() {
 }
 
 async function loadAll(options = {}) {
-  const [overview, defects, status, assignees, configData, logs, accessLogs, operationLogs, overviewPins, overviewRequirements, overviewDifficulties] = await Promise.all([
+  const shouldShowLoading = !state.overview || options.forceLoading;
+  if (shouldShowLoading) {
+    state.loadingOverview = true;
+    renderOverviewLoading();
+  }
+  const results = await Promise.allSettled([
     getJson(scopedApiUrl("/api/overview")),
     getJson(scopedApiUrl("/api/defects")),
     getJson("/api/config-status"),
@@ -603,6 +615,25 @@ async function loadAll(options = {}) {
     getJson("/api/overview-requirements"),
     getJson("/api/overview-difficulties")
   ]);
+  state.loadingOverview = false;
+
+  const overview = pickSettledResult(results[0], state.overview, "总览数据加载失败");
+  const defects = pickSettledResult(results[1], state.defects.length ? { defects: state.defects } : null, "缺陷数据加载失败");
+  if (!overview || !defects) {
+    state.loadingOverview = false;
+    throw new Error("数据加载失败，暂无可用的上一次同步数据");
+  }
+
+  const status = pickSettledResult(results[2], getFallbackConfigStatus());
+  const assignees = pickSettledResult(results[3], { assignees: state.assignees || [] });
+  const configData = pickSettledResult(results[4], { config: state.config });
+  const logs = pickSettledResult(results[5], { logs: state.logs || [] });
+  const accessLogs = pickSettledResult(results[6], { logs: state.accessLogs || [] });
+  const operationLogs = pickSettledResult(results[7], { logs: state.operationLogs || [] });
+  const overviewPins = pickSettledResult(results[8], { pinned: [...state.pinnedOverviewDefects] });
+  const overviewRequirements = pickSettledResult(results[9], { requirements: [...state.requirementOverviewDefects] });
+  const overviewDifficulties = pickSettledResult(results[10], { difficulties: state.overviewDefectDifficulties || {} });
+
   state.overview = overview;
   state.defects = defects.defects;
   state.pinnedOverviewDefects = new Set((overviewPins.pinned || []).map((id) => String(id)));
@@ -613,7 +644,7 @@ async function loadAll(options = {}) {
   state.accessLogs = accessLogs.logs;
   state.operationLogs = operationLogs.logs;
   state.assignees = assignees.assignees || [];
-  state.config = configData.config;
+  state.config = configData.config || state.config;
   renderOwnerScopeBadge();
   renderStatus(status);
   renderOverview();
@@ -624,7 +655,7 @@ async function loadAll(options = {}) {
     renderLogs();
     renderAccessLogs();
     renderOperationLogs();
-    renderConfig();
+    if (state.config) renderConfig();
   }
   maybeShowGuestNotificationTest();
 }
@@ -680,8 +711,17 @@ function sendAccessVisitDuration(options = {}) {
 }
 
 function createClientSessionId() {
-  if (crypto?.randomUUID) return crypto.randomUUID();
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const key = `zend-notify-access-session:${window.location.pathname}`;
+  try {
+    const existing = window.sessionStorage?.getItem(key);
+    if (existing) return existing;
+    const next = crypto?.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    window.sessionStorage?.setItem(key, next);
+    return next;
+  } catch {
+    if (crypto?.randomUUID) return crypto.randomUUID();
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
 }
 
 function logGuestOperation(action, detail = "", options = {}) {
@@ -901,6 +941,8 @@ async function refreshFromZentao() {
     await loadAll({ notifyGuestNewDefects: true });
     showToast(`已抓取 ${data.count} 条缺陷数据`);
   } catch (error) {
+    if (state.overview) renderOverview();
+    if (state.defects.length) renderDefects({ updateRoute: state.view === "defects", replaceRoute: true });
     showToast(error.message, "error");
   } finally {
     setFetchButtonState(false);
@@ -916,7 +958,14 @@ async function pollFetchStatus() {
     renderStatus(status);
     const fetchFinished = wasFetching && !state.fetching;
     const fetchChanged = Boolean(previousLastFetchAt && status.lastFetchAt && status.lastFetchAt !== previousLastFetchAt);
-    if (fetchFinished || fetchChanged) await loadAll({ notifyGuestNewDefects: true });
+    if (fetchFinished || fetchChanged) {
+      try {
+        await loadAll({ notifyGuestNewDefects: true });
+      } catch (loadError) {
+        if (state.overview) renderOverview();
+        showToast(loadError.message || "同步后数据刷新失败，已保留上一次数据", "error");
+      }
+    }
   } catch {
     // The next poll will recover; keep the current UI state meanwhile.
   }
@@ -927,6 +976,23 @@ async function getJson(url) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.message || data.error || `${url} ${response.status}`);
   return data;
+}
+
+function pickSettledResult(result, fallback, errorMessage = "") {
+  if (result.status === "fulfilled") return result.value;
+  if (fallback !== undefined) return fallback;
+  throw new Error(errorMessage || result.reason?.message || "请求失败");
+}
+
+function getFallbackConfigStatus() {
+  const config = state.config || {};
+  return {
+    zentaoEnabled: Boolean(config.zentao?.enabled),
+    dingtalkDryRun: config.dingtalk?.dryRun !== false,
+    schedulerEnabled: config.scheduler?.enabled !== false,
+    lastFetchAt: state.lastFetchAt,
+    fetching: state.fetching
+  };
 }
 
 function showGuestError(message) {
@@ -1039,6 +1105,10 @@ function renderLastSyncTime(value) {
 
 function renderOverview() {
   const overview = state.overview;
+  if (!overview && state.loadingOverview) {
+    renderOverviewLoading();
+    return;
+  }
   if (!overview) return;
 
   const metrics = getOverviewMetrics(overview);
@@ -1105,6 +1175,64 @@ function renderOverview() {
   });
 }
 
+function renderOverviewLoading() {
+  const metrics = hasOwnerScope()
+    ? ["今日新增", "今日解决", "今日关闭", "今日转出", "今日转入", "未完成总数", "P1/P2 未完成", "非 P1/P2 未完成", "已解决待验证", "异常数据"]
+    : ["今日新增", "今日解决", "今日关闭", "异常数据", "未完成总数", "P1/P2 未完成", "非 P1/P2 未完成", "已解决待验证"];
+  document.getElementById("metrics").innerHTML = metrics.map((label) => `
+    <div class="metric loading-metric" aria-busy="true">
+      <span class="metric-label">${escapeHtml(label)}</span>
+      <strong><span class="loading-number"></span></strong>
+      <span class="metric-foot"><span class="loading-line short"></span></span>
+    </div>
+  `).join("");
+
+  document.getElementById("urgentCount").innerHTML = `<span class="loading-dot"></span>`;
+  document.getElementById("normalCount").innerHTML = `<span class="loading-dot"></span>`;
+  document.getElementById("urgentList").innerHTML = renderDefectListLoading();
+  document.getElementById("normalList").innerHTML = renderDefectListLoading();
+
+  const ownerStatsPanel = document.querySelector(".owner-stats-panel");
+  ownerStatsPanel?.classList.toggle("hidden", hasOwnerScope());
+  if (!hasOwnerScope()) {
+    document.getElementById("ownerTable").innerHTML = renderOwnerTableLoading();
+  }
+}
+
+function renderDefectListLoading() {
+  return Array.from({ length: 3 }).map(() => `
+    <article class="defect-item loading-card" aria-busy="true">
+      <div class="defect-title">
+        <span class="loading-line id"></span>
+        <span class="loading-line title"></span>
+      </div>
+      <div class="meta">
+        <span class="loading-pill"></span>
+        <span class="loading-pill wide"></span>
+        <span class="loading-line meta-line"></span>
+      </div>
+    </article>
+  `).join("");
+}
+
+function renderOwnerTableLoading() {
+  const headers = ["负责人", "未处理缺陷", "P1/P2 未处理", "普通未处理", "待测试", "今日新增", "今日转出", "今日转入", "今日解决"];
+  return `
+    <table>
+      <thead>
+        <tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
+      </thead>
+      <tbody>
+        ${Array.from({ length: 4 }).map(() => `
+          <tr>
+            ${headers.map((_, index) => `<td><span class="loading-line ${index === 0 ? "owner" : "cell"}"></span></td>`).join("")}
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
 function getOverviewMetrics(overview) {
   if (hasOwnerScope()) {
     const owner = overview.owners[0] || {};
@@ -1144,7 +1272,7 @@ function renderDefectCards(defects, urgent, canOperateCards = false) {
     <article class="defect-item ${urgent ? "urgent" : ""} ${isFatal(defect) ? "fatal" : ""} ${ageLabel === "超期" ? "overdue" : ""} ${pinned ? "pinned" : ""}">
       <div class="defect-title">
         <span class="defect-id">#${escapeHtml(defect.id)}</span>
-        <a class="defect-title-text" href="${escapeHtml(defect.url || "#")}" target="_blank" rel="noreferrer" data-defect-title-link="${escapeHtml(defect.id)}" title="#${escapeHtml(defect.id)} ${escapeHtml(defect.title)}">${escapeHtml(defect.title)}</a>
+        <a class="defect-title-text" href="${escapeHtml(defect.url || "#")}" target="_blank" rel="noreferrer" data-defect-title-link="${escapeHtml(defect.id)}" title="${escapeHtml(defect.title)}">${escapeHtml(defect.title)}</a>
         ${canOperateCards ? `<button class="pin-defect-button ${pinned ? "active" : ""}" type="button" data-pin-defect="${escapeHtml(defect.id)}" title="${pinned ? "取消置顶" : "置顶"}" aria-label="${pinned ? "取消置顶" : "置顶"}">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path class="pin-top-bar" d="M6 4h12" />

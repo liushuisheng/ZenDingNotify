@@ -782,6 +782,81 @@ body.guest-owner-mode .metrics {
   margin-top: 6px;
 }
 
+.loading-metric {
+  cursor: default;
+  pointer-events: none;
+}
+
+.loading-line,
+.loading-number,
+.loading-pill,
+.loading-dot {
+  display: inline-block;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #eef2f7 0%, #f8fafc 45%, #e2e8f0 90%);
+  background-size: 220% 100%;
+  animation: skeletonPulse 1.15s ease-in-out infinite;
+}
+
+.loading-number {
+  width: 44px;
+  height: 28px;
+}
+
+.loading-dot {
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+}
+
+.loading-line.short {
+  width: 72px;
+  height: 12px;
+}
+
+.loading-line.id {
+  width: 54px;
+  height: 16px;
+}
+
+.loading-line.title {
+  width: min(360px, 72%);
+  height: 16px;
+}
+
+.loading-line.meta-line {
+  width: 128px;
+  height: 14px;
+}
+
+.loading-line.owner {
+  width: 78px;
+  height: 14px;
+}
+
+.loading-line.cell {
+  width: 36px;
+  height: 14px;
+}
+
+.loading-pill {
+  width: 42px;
+  height: 21px;
+}
+
+.loading-pill.wide {
+  width: 72px;
+}
+
+@keyframes skeletonPulse {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
 .split {
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);

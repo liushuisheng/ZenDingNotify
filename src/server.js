@@ -1780,10 +1780,12 @@ async function recordGuestAccess(req, url, details = {}) {
     reusable.lastSeenAt = new Date().toISOString();
     reusable.awayAt = "";
     reusable.endedAt = "";
+    closeOtherOpenAccessLogs({ ip: reusable.ip, owner: reusable.owner, path: reusable.path, keepId: reusable.id, closedAt: reusable.lastSeenAt });
     await saveStore();
     return;
   }
-  store.accessLogs.push({
+  const now = new Date().toISOString();
+  const log = {
     id: randomId(),
     type: details.type || "page",
     owner: accessOwner,
@@ -1791,12 +1793,14 @@ async function recordGuestAccess(req, url, details = {}) {
     method: req.method,
     path: requestPath,
     userAgent: String(req.headers["user-agent"] || "").slice(0, 240),
-    accessedAt: new Date().toISOString(),
+    accessedAt: now,
     durationMs: 0,
     lastSeenAt: "",
     endedAt: "",
     awayAt: ""
-  });
+  };
+  store.accessLogs.push(log);
+  closeOtherOpenAccessLogs({ ip: log.ip, owner: log.owner, path: log.path, keepId: log.id, closedAt: now });
   store.accessLogs = store.accessLogs.slice(-1000);
   await saveStore();
 }
@@ -1848,6 +1852,7 @@ async function recordGuestVisitDuration(req, body = {}) {
     log.endedAt = "";
     log.awayAt = "";
   }
+  if (!ended) closeOtherOpenAccessLogs({ ip: log.ip, owner: log.owner, path: log.path, keepId: log.id, closedAt: now });
   store.accessLogs = store.accessLogs.slice(-1000);
   await saveStore();
   return { ok: true };
@@ -1880,6 +1885,21 @@ function preferSpecificGuestPath(currentPath, nextPath) {
   const next = normalizeAccessLogPath(nextPath);
   if (current === "/guest" && next !== "/guest") return next;
   return current || next;
+}
+
+function closeOtherOpenAccessLogs({ ip, owner, path, keepId, closedAt }) {
+  if (!ip || !owner || !isGuestRoutePath(normalizeAccessLogPath(path))) return false;
+  let changed = false;
+  store.accessLogs.forEach((item) => {
+    if (item.id === keepId) return;
+    if (item.type !== "page" || item.endedAt) return;
+    if (item.ip !== ip || item.owner !== owner) return;
+    if (!areSameGuestVisitPath(item.path, path)) return;
+    item.endedAt = closedAt || new Date().toISOString();
+    item.awayAt = "";
+    changed = true;
+  });
+  return changed;
 }
 
 function getAccessLogSessionStatus(log) {
