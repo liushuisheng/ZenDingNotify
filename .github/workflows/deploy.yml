@@ -60,5 +60,5 @@ jobs:
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -i ~/.ssh/id_rsa \
-            root@42.194.169.35 \
+            deploy@42.194.169.35 \
             "deploy $DEPLOY_SHA"
