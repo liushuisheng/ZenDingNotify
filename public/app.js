@@ -2836,7 +2836,8 @@ function renderMarkdown(markdown) {
     const quote = text.match(/^>\s?(.+)$/);
     if (quote) {
       closeList();
-      html.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`);
+      const quoteText = quote[1].replace(/<br\s*\/?>(?:\s*)$/i, "");
+      html.push(`<blockquote>${renderInlineMarkdown(quoteText)}</blockquote>`);
       return;
     }
 
