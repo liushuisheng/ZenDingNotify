@@ -3,9 +3,9 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-    <title>禅道钉钉通知助手</title>
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="stylesheet" href="/styles.css">
+    <title>禅道钉钉通知助手 · 演示版</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+    <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
     <section class="login-screen hidden" id="loginScreen">
@@ -14,12 +14,13 @@
           <div class="brand-mark">ZD</div>
           <div>
             <strong>ZenDing Notify</strong>
-            <span>管理后台登录</span>
+            <span>在线演示环境</span>
           </div>
         </div>
         <label class="field">
           <span>管理员密码</span>
           <input id="adminPassword" type="password" autocomplete="current-password" autofocus>
+          <small class="demo-login-hint">演示口令：123456</small>
         </label>
         <button type="submit" class="primary">登录</button>
         <div id="loginError" class="form-feedback hidden" role="alert"></div>
@@ -31,7 +32,7 @@
         <button type="button" class="brand brand-home" id="brandHomeBtn" title="回到首页" aria-label="回到首页">
           <div class="brand-mark">ZD</div>
           <div>
-            <strong>ZenDing Notify</strong>
+            <strong>ZenDing Notify <em class="demo-badge">演示</em></strong>
             <span>禅道钉钉通知助手</span>
           </div>
         </button>
@@ -501,6 +502,7 @@
         </div>
       </section>
     </div>
-    <script src="/app.js"></script>
+    <script src="./demo-api.js"></script>
+    <script src="./app.js"></script>
   </body>
 </html>

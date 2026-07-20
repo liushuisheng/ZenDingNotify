@@ -19,6 +19,39 @@
   --shadow-soft: 0 10px 28px rgba(30, 41, 59, 0.06);
 }
 
+.demo-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 5px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #e8f0ff;
+  color: #2563eb;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.2;
+  vertical-align: 2px;
+}
+
+.demo-login-hint {
+  display: block;
+  margin-top: 6px;
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.demo-mode .assignee-guest-link-copy {
+  display: none;
+}
+
+.demo-mode :is(input, textarea):disabled {
+  cursor: not-allowed;
+  background: #f4f7fa;
+  color: #768397;
+}
+
 .dynamic-data-region {
   position: relative;
 }
