@@ -12,8 +12,9 @@ const configPath = path.join(dataDir, "config.json");
 const storePath = path.join(dataDir, "store.json");
 await loadEnvFile(path.join(rootDir, ".env"));
 const port = Number(process.env.PORT || 8787);
-const apiBaseUrl = normalizeApiBaseUrl(process.env.API_BASE_URL);
-const GUEST_OVERVIEW_URL = "http://10.2.81.252:8787/guest";
+const apiBaseUrl = normalizeBaseUrl(process.env.API_BASE_URL, "API_BASE_URL");
+const publicBaseUrl = normalizeBaseUrl(process.env.PUBLIC_BASE_URL, "PUBLIC_BASE_URL");
+let detectedPublicBaseUrl = "";
 const LOG_LEVELS = { silent: 0, error: 1, info: 2, debug: 3 };
 const logLevelName = getCliLogLevel() || String(process.env.LOG_LEVEL || process.env.ZEND_LOG || "silent").toLowerCase();
 const logLevel = LOG_LEVELS[logLevelName] ?? (["1", "true", "yes", "on"].includes(logLevelName) ? LOG_LEVELS.info : LOG_LEVELS.silent);
@@ -206,6 +207,7 @@ server.listen(port, () => {
 
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  rememberPublicBaseUrl(req);
 
   if (apiBaseUrl && url.pathname.startsWith("/api/")) {
     await proxyApiRequest(req, res, url);
@@ -1151,7 +1153,7 @@ function buildOverdueMessage(defects) {
 }
 
 function formatMessageFooter() {
-  return `🔎 查看完整数据：[缺陷总览](${GUEST_OVERVIEW_URL})`;
+  return `🔎 查看完整数据：[缺陷总览](${getGuestOverviewUrl()})`;
 }
 
 function formatDefects(defects) {
@@ -2933,15 +2935,45 @@ function trimSlash(value) {
   return String(value || "").replace(/\/+$/, "");
 }
 
-function normalizeApiBaseUrl(value) {
+function normalizeBaseUrl(value, variableName) {
   const normalized = trimSlash(String(value || "").trim());
   if (!normalized) return "";
   const parsed = new URL(normalized);
-  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("API_BASE_URL must use http or https");
+  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error(`${variableName} must use http or https`);
   if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
-    throw new Error("API_BASE_URL must contain only the server origin, without a path, query, or hash");
+    throw new Error(`${variableName} must contain only the server origin, without a path, query, or hash`);
   }
   return parsed.origin;
+}
+
+function rememberPublicBaseUrl(req) {
+  if (publicBaseUrl || apiBaseUrl) return;
+  const forwardedProtocol = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const forwardedHost = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim();
+  const protocol = forwardedProtocol || (req.socket.encrypted ? "https" : "http");
+  const host = forwardedHost || String(req.headers.host || "").trim();
+  if (!host || !["http", "https"].includes(protocol)) return;
+  try {
+    const candidate = new URL(`${protocol}://${host}`).origin;
+    if (detectedPublicBaseUrl && !isLoopbackOrigin(detectedPublicBaseUrl) && isLoopbackOrigin(candidate)) return;
+    detectedPublicBaseUrl = candidate;
+  } catch {
+    // Invalid forwarded headers are ignored; the configured or local fallback remains available.
+  }
+}
+
+function getGuestOverviewUrl() {
+  const baseUrl = publicBaseUrl || apiBaseUrl || detectedPublicBaseUrl || `http://localhost:${port}`;
+  return `${trimSlash(baseUrl)}/guest`;
+}
+
+function isLoopbackOrigin(value) {
+  try {
+    const hostname = new URL(value).hostname.replace(/^\[|\]$/g, "");
+    return ["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(hostname);
+  } catch {
+    return false;
+  }
 }
 
 async function loadEnvFile(filePath) {

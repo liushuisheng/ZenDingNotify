@@ -258,6 +258,7 @@ Copy-Item .env.example .env
 
 ```dotenv
 API_BASE_URL=https://notify.example.com
+PUBLIC_BASE_URL=https://notify.example.com
 ```
 
 然后仍然访问 `http://localhost:8787`。本地 Node 服务会代理所有 `/api/*` 请求，登录 Cookie 保留在本地域名下，不需要额外配置 CORS。
@@ -270,6 +271,7 @@ API_BASE_URL=https://notify.example.com
 | --- | --- | --- |
 | `PORT` | `8787` | HTTP 监听端口 |
 | `API_BASE_URL` | 空 | 远程 API 代理地址；生产服务通常应留空 |
+| `PUBLIC_BASE_URL` | 自动识别 | 推送消息中“缺陷总览”的公开访问地址；定时推送环境建议显式配置 |
 | `LOG_LEVEL` | `silent` | `silent`、`error`、`info` 或 `debug` |
 
 ## 调试日志
