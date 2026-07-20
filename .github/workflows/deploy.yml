@@ -1,0 +1,63 @@
+name: Build and deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Check code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check server
+        run: npm run check
+
+      - name: Check browser script
+        run: node --check public/app.js
+
+  deploy:
+    name: Deploy to Tencent Cloud
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          TENCENT_SSH_KEY: ${{ secrets.TENCENT_SSH_KEY }}
+        run: |
+          test -n "$TENCENT_SSH_KEY"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$TENCENT_SSH_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          cat > ~/.ssh/known_hosts <<'EOF'
+          42.194.169.35 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPPXthwIM0ABOKQjwKB4EImDre+SFjBd2wGf1oBNmfM+
+          EOF
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy exact commit
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          ssh \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -i ~/.ssh/id_rsa \
+            root@42.194.169.35 \
+            "deploy $DEPLOY_SHA"
