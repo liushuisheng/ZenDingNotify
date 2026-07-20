@@ -17,17 +17,17 @@
     if (element) element.disabled = true;
   });
 
-  const STORAGE_KEY = "zend-ding-notify-demo-state-v1";
+  const STORAGE_KEY = "zend-ding-notify-demo-state-v2";
   const AUTH_KEY = "zend-ding-notify-demo-auth";
   const ADMIN_PASSWORD = "123456";
-  const assignees = ["刘水生", "李思成", "王思鑫", "潘文豪", "谌祖恒", "马陈绵"];
+  const assignees = ["演示成员甲", "演示成员乙", "演示成员丙", "演示成员丁", "演示成员戊", "演示成员己"];
   const aliases = {
-    刘水生: "liuss",
-    李思成: "lisicheng",
-    王思鑫: "wangsixin",
-    潘文豪: "panwenhao",
-    谌祖恒: "tanzuheng",
-    马陈绵: "machm"
+    演示成员甲: "demoa",
+    演示成员乙: "demob",
+    演示成员丙: "democ",
+    演示成员丁: "demod",
+    演示成员戊: "demoe",
+    演示成员己: "demof"
   };
 
   const pad = (value) => String(value).padStart(2, "0");
@@ -74,67 +74,67 @@
 
   function createSeedState() {
     const defects = [
-      defect(90001, "移动端审批页在窄屏下操作区发生遮挡", 1, "刘水生", { openedDay: 0, openedBy: "周产品" }),
-      defect(90002, "消息中心未读数量在切换组织后没有刷新", 2, "李思成", { openedDay: 0, openedBy: "林测试" }),
-      defect(90003, "流程表单字段较多时首屏加载速度偏慢", 2, "王思鑫", { openedDay: -1, openedBy: "周产品" }),
-      defect(90004, "导出文件名称需要包含业务日期", 3, "潘文豪", { openedDay: -3, openedBy: "陈业务" }),
-      defect(90005, "列表筛选条件在返回页面后应继续保留", 3, "谌祖恒", { openedDay: -2, openedBy: "林测试" }),
-      defect(90006, "低代码页面复制组件后间距配置未继承", 4, "马陈绵", { openedDay: -4, openedBy: "周产品" }),
-      defect(90007, "个人中心头像上传后缓存未及时更新", 2, "陈加鹏", {
+      defect(90001, "移动端审批页在窄屏下操作区发生遮挡", 1, "演示成员甲", { openedDay: 0, openedBy: "产品体验员" }),
+      defect(90002, "消息中心未读数量在切换组织后没有刷新", 2, "演示成员乙", { openedDay: 0, openedBy: "测试体验员" }),
+      defect(90003, "流程表单字段较多时首屏加载速度偏慢", 2, "演示成员丙", { openedDay: -1, openedBy: "产品体验员" }),
+      defect(90004, "导出文件名称需要包含业务日期", 3, "演示成员丁", { openedDay: -3, openedBy: "业务体验员" }),
+      defect(90005, "列表筛选条件在返回页面后应继续保留", 3, "演示成员戊", { openedDay: -2, openedBy: "测试体验员" }),
+      defect(90006, "低代码页面复制组件后间距配置未继承", 4, "演示成员己", { openedDay: -4, openedBy: "产品体验员" }),
+      defect(90007, "个人中心头像上传后缓存未及时更新", 2, "质量验证员", {
         status: "resolved",
         openedDay: -2,
         resolvedDate: dateTime(0, 10, 16, 20),
-        resolvedBy: "刘水生",
-        assignedFrom: "刘水生",
+        resolvedBy: "演示成员甲",
+        assignedFrom: "演示成员甲",
         assignedAt: dateTime(0, 10, 17, 5),
-        transferFrom: "刘水生",
-        transferTo: "陈加鹏",
+        transferFrom: "演示成员甲",
+        transferTo: "质量验证员",
         transferAt: dateTime(0, 10, 17, 5),
         transferStatusAfter: "resolved"
       }),
-      defect(90008, "工作台卡片排序在刷新后恢复默认", 3, "陈加鹏", {
+      defect(90008, "工作台卡片排序在刷新后恢复默认", 3, "质量验证员", {
         status: "resolved",
         openedDay: -5,
         resolvedDate: dateTime(0, 11, 8, 12),
-        resolvedBy: "李思成",
-        assignedFrom: "李思成",
+        resolvedBy: "演示成员乙",
+        assignedFrom: "演示成员乙",
         assignedAt: dateTime(0, 11, 9, 0),
-        transferFrom: "李思成",
-        transferTo: "陈加鹏",
+        transferFrom: "演示成员乙",
+        transferTo: "质量验证员",
         transferAt: dateTime(0, 11, 9, 0),
         transferStatusAfter: "resolved"
       }),
-      defect(90009, "流程抄送人搜索结果需要展示所属部门", 2, "王思鑫", {
+      defect(90009, "流程抄送人搜索结果需要展示所属部门", 2, "演示成员丙", {
         status: "closed",
         openedDay: -6,
         resolvedDate: dateTime(-1, 15, 20, 0),
-        resolvedBy: "王思鑫",
+        resolvedBy: "演示成员丙",
         closedDate: dateTime(0, 9, 42, 10),
-        closedBy: "林测试"
+        closedBy: "测试体验员"
       }),
-      defect(90010, "附件预览关闭后页面滚动位置发生变化", 3, "潘文豪", {
+      defect(90010, "附件预览关闭后页面滚动位置发生变化", 3, "演示成员丁", {
         status: "closed",
         openedDay: -4,
         resolvedDate: dateTime(-1, 14, 12, 0),
-        resolvedBy: "潘文豪",
+        resolvedBy: "演示成员丁",
         closedDate: dateTime(0, 13, 6, 28),
-        closedBy: "林测试"
+        closedBy: "测试体验员"
       }),
-      defect(90011, "表格列宽拖动到最小时标题显示不完整", 2, "李思成", {
+      defect(90011, "表格列宽拖动到最小时标题显示不完整", 2, "演示成员乙", {
         openedDay: -2,
-        assignedFrom: "刘水生",
+        assignedFrom: "演示成员甲",
         assignedAt: dateTime(0, 14, 25, 31),
-        transferFrom: "刘水生",
-        transferTo: "李思成",
+        transferFrom: "演示成员甲",
+        transferTo: "演示成员乙",
         transferAt: dateTime(0, 14, 25, 31),
         transferStatusAfter: "active"
       }),
-      defect(90012, "审批意见为空时不应展示占位符", 3, "刘水生", {
+      defect(90012, "审批意见为空时不应展示占位符", 3, "演示成员甲", {
         openedDay: -3,
-        assignedFrom: "王思鑫",
+        assignedFrom: "演示成员丙",
         assignedAt: dateTime(0, 15, 3, 8),
-        transferFrom: "王思鑫",
-        transferTo: "刘水生",
+        transferFrom: "演示成员丙",
+        transferTo: "演示成员甲",
         transferAt: dateTime(0, 15, 3, 8),
         transferStatusAfter: "active"
       })
@@ -152,11 +152,11 @@
       "",
       "1. #90001 [P1] 移动端审批页在窄屏下操作区发生遮挡",
       "",
-      "   负责人：**刘水生**  [查看缺陷](https://example.com/demo/defects/90001)",
+      "   负责人：**演示成员甲**  [查看缺陷](https://example.com/demo/defects/90001)",
       "",
       "2. #90002 [P2] 消息中心未读数量在切换组织后没有刷新",
       "",
-      "   负责人：**李思成**  [查看缺陷](https://example.com/demo/defects/90002)",
+      "   负责人：**演示成员乙**  [查看缺陷](https://example.com/demo/defects/90002)",
       "",
       "> 演示数据仅用于体验界面与操作流程。"
     ].join("\n");
@@ -173,12 +173,12 @@
       ],
       accessLogs: [
         { id: "access-1", type: "page", owner: "匿名访问", ip: "203.0.113.18", path: "/guest", accessedAt: dateTime(0, 15, 12, 8), durationMs: 248000, sessionStatus: "ended" },
-        { id: "access-2", type: "page", owner: "刘水生", ip: "198.51.100.23", path: "/guest/liuss", accessedAt: dateTime(0, 14, 38, 41), durationMs: 526000, sessionStatus: "ended" },
-        { id: "access-3", type: "page", owner: "王思鑫", ip: "192.0.2.35", path: "/guest/wangsixin", accessedAt: dateTime(-1, 17, 6, 14), durationMs: 183000, sessionStatus: "ended" }
+        { id: "access-2", type: "page", owner: "演示成员甲", ip: "198.51.100.23", path: "/guest/demoa", accessedAt: dateTime(0, 14, 38, 41), durationMs: 526000, sessionStatus: "ended" },
+        { id: "access-3", type: "page", owner: "演示成员丙", ip: "192.0.2.35", path: "/guest/democ", accessedAt: dateTime(-1, 17, 6, 14), durationMs: 183000, sessionStatus: "ended" }
       ],
       operationLogs: [
         { id: "operation-1", operator: "管理员", ip: "203.0.113.10", action: "标记置顶", detail: "#90001", path: "/", operatedAt: dateTime(0, 16, 20, 16) },
-        { id: "operation-2", operator: "刘水生", ip: "198.51.100.23", action: "标记修复难度", detail: "#90001 困难", path: "/guest/liuss", operatedAt: dateTime(0, 15, 42, 9) },
+        { id: "operation-2", operator: "演示成员甲", ip: "198.51.100.23", action: "标记修复难度", detail: "#90001 困难", path: "/guest/demoa", operatedAt: dateTime(0, 15, 42, 9) },
         { id: "operation-3", operator: "管理员", ip: "203.0.113.10", action: "标记为需求", detail: "#90005", path: "/", operatedAt: dateTime(-1, 18, 5, 30) }
       ],
       syncLogs: [
@@ -239,7 +239,7 @@
       openTotal: open.length,
       urgentOpen: open.filter((item) => ["1", "2"].includes(item.priority)).length,
       normalOpen: open.filter((item) => !["1", "2"].includes(item.priority)).length,
-      pendingTest: related.filter((item) => item.status === "resolved" && item.assignedTo === "陈加鹏").length,
+      pendingTest: related.filter((item) => item.status === "resolved" && item.assignedTo === "质量验证员").length,
       todayAdded: related.filter((item) => isToday(item.openedDate) && item.initialAssignedTo === name).length,
       todayTransferred: related.filter((item) => isToday(item.transferAt) && item.transferFrom === name && item.transferStatusAfter !== "resolved").length,
       todayReturned: related.filter((item) => isToday(item.transferAt) && item.transferTo === name).length,
@@ -252,7 +252,7 @@
     const open = defects.filter(isOpen);
     const urgentOpen = open.filter((item) => ["1", "2"].includes(item.priority));
     const normalOpen = open.filter((item) => !["1", "2"].includes(item.priority));
-    const resolvedPendingVerify = defects.filter((item) => item.status === "resolved" && item.assignedTo === "陈加鹏");
+    const resolvedPendingVerify = defects.filter((item) => item.status === "resolved" && item.assignedTo === "质量验证员");
     const todayResolved = defects.filter((item) => isToday(item.resolvedDate));
     const todayClosed = defects.filter((item) => isToday(item.closedDate));
     const todayAdded = defects.filter((item) => isToday(item.openedDate));

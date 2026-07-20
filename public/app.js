@@ -80,40 +80,28 @@ const roleGroups = [
   {
     id: "frontend",
     name: "前端",
-    members: [["刘水生"], ["谌祖恒"], ["王思鑫"], ["李彦龙"], ["李思成"], ["马陈绵"]]
+    members: [["演示成员甲"], ["演示成员戊"], ["演示成员丙"], ["演示成员庚"], ["演示成员乙"], ["演示成员己"]]
   },
   {
     id: "backend",
     name: "后端",
-    members: [["潘文豪"], ["陈运辉"], ["李世超"], ["彭求春"]]
+    members: [["演示成员丁"], ["演示成员辛"], ["演示成员壬"], ["演示成员癸"]]
   },
   {
     id: "warzone",
     name: "战区",
-    members: [["陈加鹏"], ["蔡锐彬"], ["陈鑫海"], ["谢旻熹"], ["汉寻"]]
+    members: [["质量验证员"], ["演示成员子"], ["演示成员丑"], ["演示成员寅"], ["演示成员卯"]]
   }
 ];
 
 const zentaoAccountAliases = {
-  liuss: "刘水生",
-  liushuisheng: "刘水生",
-  lisicheng: "李思成",
-  wangsixin: "王思鑫",
-  liyanlong: "李彦龙",
-  machm: "马陈绵",
-  machenmian: "马陈绵",
-  tanzuheng: "谌祖恒",
-  chenzuheng: "谌祖恒",
-  chenjiapeng: "陈加鹏",
-  chenjp: "陈加鹏",
-  panwenhao: "潘文豪",
-  pwh: "潘文豪",
-  chenyunhui: "陈运辉",
-  chenyh: "陈运辉",
-  lishichao: "李世超",
-  lisc: "李世超",
-  pengqiuchun: "彭求春",
-  pengqc: "彭求春"
+  demoa: "演示成员甲",
+  demob: "演示成员乙",
+  democ: "演示成员丙",
+  demod: "演示成员丁",
+  demoe: "演示成员戊",
+  demof: "演示成员己",
+  verifier: "质量验证员"
 };
 
 document.body.classList.toggle("guest-mode", guestMode);
@@ -673,7 +661,7 @@ function getOwnerScopeSwitchOptions() {
   const guestAccessAccounts = new Set(state.config?.guestAccessAccounts || []);
   return owners
     .map((name) => ({ name, account: getGuestAccountAlias(name) }))
-    .filter((option) => !namesMatch(option.name, "陈加鹏") && !["chenjp", "chenjiapeng"].includes(option.account))
+    .filter((option) => !namesMatch(option.name, "质量验证员") && option.account !== "verifier")
     .filter((option) => option.account)
     .filter((option) => !guestMode || guestAccessAccounts.has(option.account))
     .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
@@ -3797,7 +3785,7 @@ function isFrontendOwner(value) {
 }
 
 function isTestOwner(value) {
-  return ["陈加鹏", "陈家鹏"].some((name) => namesMatch(value, name));
+  return namesMatch(value, "质量验证员");
 }
 
 let toastTimer;
