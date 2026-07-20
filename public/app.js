@@ -397,11 +397,16 @@ function initGlobalTooltips() {
   tooltip.className = "global-tooltip";
   document.body.appendChild(tooltip);
   let activeTarget = null;
+  const mobileViewport = window.matchMedia("(max-width: 760px)");
 
   const isTitleTooltipTarget = (target) => Boolean(target.closest?.(".defect-title-text, .title-link"));
   const getTooltipTarget = (target) => {
     const tooltipTarget = target?.closest?.("[data-tooltip], [title]");
-    if (tooltipTarget?.classList.contains("brand-home") && window.matchMedia("(max-width: 760px)").matches) {
+    if (mobileViewport.matches) {
+      if (tooltipTarget?.getAttribute("title") && !tooltipTarget.dataset.tooltip) {
+        tooltipTarget.dataset.tooltip = tooltipTarget.getAttribute("title");
+      }
+      tooltipTarget?.removeAttribute("title");
       return null;
     }
     return tooltipTarget;
@@ -415,6 +420,7 @@ function initGlobalTooltips() {
     return target.dataset.tooltip || "";
   };
   const show = (target) => {
+    if (mobileViewport.matches) return;
     const text = normalizeTooltipTarget(target);
     if (!text) return;
     if (isTitleTooltipTarget(target) && !isTextTruncated(target)) return;
@@ -443,7 +449,10 @@ function initGlobalTooltips() {
   document.addEventListener("focusin", (event) => show(getTooltipTarget(event.target)));
   document.addEventListener("focusout", (event) => hide(getTooltipTarget(event.target)));
   window.addEventListener("scroll", () => activeTarget && positionGlobalTooltip(tooltip, activeTarget), true);
-  window.addEventListener("resize", () => activeTarget && positionGlobalTooltip(tooltip, activeTarget));
+  window.addEventListener("resize", () => {
+    if (mobileViewport.matches) hide();
+    else if (activeTarget) positionGlobalTooltip(tooltip, activeTarget);
+  });
 }
 
 function positionGlobalTooltip(tooltip, target) {
@@ -661,10 +670,12 @@ function getOwnerScopeSwitchOptions() {
   const configured = state.config?.rules?.assignees || [];
   const fallbackOwners = state.overview?.owners?.map((owner) => owner.name || owner.account).filter(Boolean) || [];
   const owners = configured.length ? configured : fallbackOwners;
+  const guestAccessAccounts = new Set(state.config?.guestAccessAccounts || []);
   return owners
     .map((name) => ({ name, account: getGuestAccountAlias(name) }))
     .filter((option) => !namesMatch(option.name, "陈加鹏") && !["chenjp", "chenjiapeng"].includes(option.account))
     .filter((option) => option.account)
+    .filter((option) => !guestMode || guestAccessAccounts.has(option.account))
     .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
 }
 
@@ -2733,6 +2744,7 @@ function openLogModal(log) {
   document.getElementById("logPreviewTime").textContent = formatDingPreviewTime(log.createdAt);
   document.getElementById("logModalContent").innerHTML = renderMarkdown(log.text || "");
   document.getElementById("logModal").classList.remove("hidden");
+  updateModalScrollLock();
 }
 
 function formatDingPreviewTime(value) {
@@ -2743,6 +2755,7 @@ function formatDingPreviewTime(value) {
 
 function closeLogModal() {
   document.getElementById("logModal").classList.add("hidden");
+  updateModalScrollLock();
 }
 
 let pendingConfirmResolve = null;
@@ -2752,6 +2765,7 @@ function requestConfirm({ title, message, confirmText = "确认" }) {
   document.getElementById("confirmModalMessage").textContent = message || "确认继续吗？";
   document.getElementById("confirmConfirmModal").textContent = confirmText;
   modal.classList.remove("hidden");
+  updateModalScrollLock();
   document.getElementById("confirmConfirmModal").focus();
   return new Promise((resolve) => {
     pendingConfirmResolve = resolve;
@@ -2762,10 +2776,17 @@ function closeConfirmModal(confirmed) {
   const modal = document.getElementById("confirmModal");
   if (!modal || modal.classList.contains("hidden")) return;
   modal.classList.add("hidden");
+  updateModalScrollLock();
   if (pendingConfirmResolve) {
     pendingConfirmResolve(Boolean(confirmed));
     pendingConfirmResolve = null;
   }
+}
+
+function updateModalScrollLock() {
+  const hasOpenModal = [...document.querySelectorAll(".modal-backdrop")]
+    .some((modal) => !modal.classList.contains("hidden"));
+  document.body.classList.toggle("modal-open", hasOpenModal);
 }
 
 function getRecentPushLogs() {
@@ -3214,12 +3235,25 @@ function renderAssigneePicker(selectedAssignees) {
       <span>未勾选任何人时表示全部</span>
     </div>
     <div class="checkbox-list">
-      ${assignees.map((assignee) => `
-        <label class="check-option">
-          <input type="checkbox" name="ruleAssignee" value="${escapeHtml(assignee)}" ${selected.has(assignee) ? "checked" : ""}>
-          <span>${escapeHtml(assignee)}</span>
-        </label>
-      `).join("")}
+      ${assignees.map((assignee) => {
+        const guestAccount = getGuestAccountAlias(assignee);
+        return `
+          <div class="check-option">
+            <label class="check-option-toggle">
+              <input type="checkbox" name="ruleAssignee" value="${escapeHtml(assignee)}" ${selected.has(assignee) ? "checked" : ""}>
+              <span>${escapeHtml(assignee)}</span>
+            </label>
+            ${guestAccount ? `
+              <button type="button" class="assignee-guest-link-copy" data-copy-guest-link="${escapeHtml(guestAccount)}" data-tooltip="复制个人访问链接" aria-label="复制${escapeHtml(assignee)}的个人访问链接">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect width="13" height="13" x="9" y="9" rx="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </button>
+            ` : ""}
+          </div>
+        `;
+      }).join("")}
     </div>
   `;
 
@@ -3243,6 +3277,20 @@ function renderAssigneePicker(selectedAssignees) {
   });
   picker.querySelectorAll("input[name='ruleAssignee']").forEach((input) => {
     input.addEventListener("change", refreshRoleStates);
+  });
+  picker.querySelectorAll("[data-copy-guest-link]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const account = button.dataset.copyGuestLink || "";
+      const url = new URL(`/guest/${encodeURIComponent(account)}`, window.location.origin).toString();
+      try {
+        await copyText(url);
+        showToast("个人访问链接已复制");
+      } catch (error) {
+        showToast(error.message || "复制链接失败", "error");
+      }
+    });
   });
   refreshRoleStates();
 }

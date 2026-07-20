@@ -2445,7 +2445,11 @@ function getPublicConfig() {
   return {
     rules: {
       assignees: [...(config.rules?.assignees || [])]
-    }
+    },
+    guestAccessAccounts: getConfiguredAssigneeNames()
+      .filter((owner) => hasGuestPassword(owner))
+      .map((owner) => getGuestAccountKey(owner))
+      .filter(Boolean)
   };
 }
 
