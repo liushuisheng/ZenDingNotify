@@ -10,7 +10,9 @@ const dataDir = path.join(rootDir, "data");
 const publicDir = path.join(rootDir, "public");
 const configPath = path.join(dataDir, "config.json");
 const storePath = path.join(dataDir, "store.json");
+await loadEnvFile(path.join(rootDir, ".env"));
 const port = Number(process.env.PORT || 8787);
+const apiBaseUrl = normalizeApiBaseUrl(process.env.API_BASE_URL);
 const GUEST_OVERVIEW_URL = "http://10.2.81.252:8787/guest";
 const LOG_LEVELS = { silent: 0, error: 1, info: 2, debug: 3 };
 const logLevelName = getCliLogLevel() || String(process.env.LOG_LEVEL || process.env.ZEND_LOG || "silent").toLowerCase();
@@ -165,7 +167,11 @@ store.operationLogs = normalizeOperationLogs(store.operationLogs);
 await saveConfig();
 await saveStore();
 
-scheduleJobs();
+if (apiBaseUrl) {
+  logInfo("api-proxy:enabled", { target: sanitizeUrl(apiBaseUrl) });
+} else {
+  scheduleJobs();
+}
 
 const server = http.createServer(async (req, res) => {
   const requestId = randomId();
@@ -200,6 +206,11 @@ server.listen(port, () => {
 
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (apiBaseUrl && url.pathname.startsWith("/api/")) {
+    await proxyApiRequest(req, res, url);
+    return;
+  }
 
   if (req.method === "GET" && url.pathname === "/api/session") {
     sendJson(res, 200, { authenticated: isAdminRequest(req) });
@@ -2557,6 +2568,48 @@ async function readBodyJson(req) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
+async function proxyApiRequest(req, res, url) {
+  const targetUrl = new URL(`${url.pathname}${url.search}`, `${apiBaseUrl}/`);
+  const headers = new Headers();
+  const skippedRequestHeaders = new Set(["connection", "content-length", "host", "transfer-encoding"]);
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (skippedRequestHeaders.has(name) || value === undefined) continue;
+    if (Array.isArray(value)) value.forEach((item) => headers.append(name, item));
+    else headers.set(name, value);
+  }
+  headers.set("x-forwarded-host", String(req.headers.host || ""));
+  headers.set("x-forwarded-proto", "http");
+
+  const requestBody = ["GET", "HEAD"].includes(req.method) ? undefined : await readRequestBuffer(req);
+  const upstream = await fetchWithLog("api-proxy", targetUrl, {
+    method: req.method,
+    headers,
+    body: requestBody,
+    redirect: "manual"
+  });
+
+  const responseHeaders = {};
+  const skippedResponseHeaders = new Set(["connection", "content-encoding", "content-length", "transfer-encoding"]);
+  upstream.headers.forEach((value, name) => {
+    if (!skippedResponseHeaders.has(name) && name !== "set-cookie") responseHeaders[name] = value;
+  });
+  const setCookies = typeof upstream.headers.getSetCookie === "function"
+    ? upstream.headers.getSetCookie()
+    : [upstream.headers.get("set-cookie")].filter(Boolean);
+  if (setCookies.length) responseHeaders["set-cookie"] = setCookies;
+
+  const responseBody = Buffer.from(await upstream.arrayBuffer());
+  responseHeaders["content-length"] = String(responseBody.length);
+  res.writeHead(upstream.status, responseHeaders);
+  res.end(responseBody);
+}
+
+async function readRequestBuffer(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
 async function saveConfig() {
   await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
@@ -2835,6 +2888,40 @@ function contentType(filePath) {
 
 function trimSlash(value) {
   return String(value || "").replace(/\/+$/, "");
+}
+
+function normalizeApiBaseUrl(value) {
+  const normalized = trimSlash(String(value || "").trim());
+  if (!normalized) return "";
+  const parsed = new URL(normalized);
+  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("API_BASE_URL must use http or https");
+  if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new Error("API_BASE_URL must contain only the server origin, without a path, query, or hash");
+  }
+  return parsed.origin;
+}
+
+async function loadEnvFile(filePath) {
+  let content;
+  try {
+    content = await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  for (const rawLine of content.replace(/^\uFEFF/, "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const separator = line.indexOf("=");
+    if (separator <= 0) continue;
+    const key = line.slice(0, separator).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || process.env[key] !== undefined) continue;
+    let envValue = line.slice(separator + 1).trim();
+    if ((envValue.startsWith('"') && envValue.endsWith('"')) || (envValue.startsWith("'") && envValue.endsWith("'"))) {
+      envValue = envValue.slice(1, -1);
+    }
+    process.env[key] = envValue;
+  }
 }
 
 function getCliLogLevel() {
