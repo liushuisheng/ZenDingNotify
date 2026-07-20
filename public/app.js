@@ -4,6 +4,7 @@ const state = {
   logs: [],
   accessLogs: [],
   operationLogs: [],
+  syncLogs: [],
   config: null,
   assignees: [],
   defectListMode: "all",
@@ -27,8 +28,19 @@ const state = {
   activeGuestNotificationCount: 0,
   authenticated: false,
   accessVisit: null,
-  accessAwayTimer: null
+  accessAwayTimer: null,
+  mobilePendingPanel: "urgent",
+  mobileOwnerMetric: "open",
+  mobileLogLimits: {
+    logs: 10,
+    accessLogs: 10,
+    operationLogs: 10,
+    syncLogs: 10
+  }
 };
+
+const mobileLogObservers = new Map();
+const mobileLogBatchSize = 10;
 
 const difficultyOptions = [
   { value: "simple", label: "简单" },
@@ -42,6 +54,7 @@ const titles = {
   logs: ["推送记录", "查看钉钉推送内容、结果和触发来源"],
   accessLogs: ["访问日志", "查看总览和个人视角访问记录"],
   operationLogs: ["操作日志", "查看个人访客的页面操作记录"],
+  syncLogs: ["同步记录", "查看禅道数据同步时间、结果和数据变化"],
   actions: ["手动推送", "手动触发日报与风险提醒"],
   settings: ["配置", "切换真实禅道数据、钉钉机器人和推送规则"]
 };
@@ -52,6 +65,7 @@ const viewRoutes = {
   logs: "#/logs",
   accessLogs: "#/access-logs",
   operationLogs: "#/operation-logs",
+  syncLogs: "#/sync-logs",
   actions: "#/actions",
   settings: "#/settings"
 };
@@ -117,6 +131,7 @@ document.querySelectorAll(".nav-item").forEach((button) => {
       if (getViewFromRoute() !== "defects") resetDefectFiltersToDefault();
       renderDefects();
     }
+    closeMobileMenu();
   });
 });
 window.addEventListener("hashchange", handleRouteChange);
@@ -132,10 +147,145 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    closeMobileMenu();
     closeConfirmModal(false);
     closeLogModal();
   }
 });
+
+document.getElementById("mobileMenuBtn")?.addEventListener("click", openMobileMenu);
+document.getElementById("mobileMenuFab")?.addEventListener("click", openMobileMenu);
+document.getElementById("mobileMenuCloseBtn")?.addEventListener("click", closeMobileMenu);
+document.getElementById("mobileMenuBackdrop")?.addEventListener("click", closeMobileMenu);
+document.getElementById("mobileFilterToggle")?.addEventListener("click", toggleMobileDefectFilters);
+document.getElementById("mobileFilterDone")?.addEventListener("click", closeMobileDefectFilters);
+document.getElementById("mobileLogBackTop")?.addEventListener("click", () => {
+  window.scrollTo({ top: 0, behavior: "smooth" });
+});
+window.addEventListener("scroll", updateMobileLogBackTop, { passive: true });
+window.addEventListener("resize", updateMobileLogBackTop);
+initMobileDefectSelects();
+document.querySelectorAll("[data-mobile-pending]").forEach((button) => {
+  button.addEventListener("click", () => setMobilePendingPanel(button.dataset.mobilePending));
+});
+document.querySelectorAll("[data-mobile-overview-more]").forEach((button) => {
+  button.addEventListener("click", () => openDefectList(button.dataset.mobileOverviewMore));
+});
+
+function openMobileMenu() {
+  document.body.classList.add("mobile-menu-open");
+  document.getElementById("mobileMenuBtn")?.setAttribute("aria-expanded", "true");
+  document.getElementById("mobileMenuFab")?.setAttribute("aria-expanded", "true");
+}
+
+function closeMobileMenu() {
+  document.body.classList.remove("mobile-menu-open");
+  document.getElementById("mobileMenuBtn")?.setAttribute("aria-expanded", "false");
+  document.getElementById("mobileMenuFab")?.setAttribute("aria-expanded", "false");
+}
+
+function toggleMobileDefectFilters() {
+  const toolbar = document.getElementById("defectToolbar");
+  const button = document.getElementById("mobileFilterToggle");
+  const open = !toolbar?.classList.contains("mobile-open");
+  toolbar?.classList.toggle("mobile-open", open);
+  button?.setAttribute("aria-expanded", String(open));
+}
+
+function closeMobileDefectFilters() {
+  document.getElementById("defectToolbar")?.classList.remove("mobile-open");
+  document.getElementById("mobileFilterToggle")?.setAttribute("aria-expanded", "false");
+  closeMobileDefectSelects();
+}
+
+function initMobileDefectSelects() {
+  ["priorityFilter", "defectSort", "statusFilter", "openedAgeFilter"].forEach((id) => {
+    const select = document.getElementById(id);
+    if (!select || select.nextElementSibling?.classList.contains("mobile-select")) return;
+
+    const mobileSelect = document.createElement("div");
+    mobileSelect.className = "mobile-select";
+    mobileSelect.dataset.selectId = id;
+    mobileSelect.innerHTML = `
+      <button type="button" class="mobile-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+        <span></span><i aria-hidden="true"></i>
+      </button>
+      <div class="mobile-select-menu" role="listbox">
+        ${Array.from(select.options).map((option) => `
+          <button type="button" role="option" data-value="${escapeHtml(option.value)}">
+            <span>${escapeHtml(option.textContent)}</span><i aria-hidden="true"></i>
+          </button>
+        `).join("")}
+      </div>
+    `;
+    select.insertAdjacentElement("afterend", mobileSelect);
+
+    mobileSelect.querySelector(".mobile-select-trigger").addEventListener("click", (event) => {
+      event.stopPropagation();
+      const willOpen = !mobileSelect.classList.contains("open");
+      closeMobileDefectSelects(mobileSelect);
+      mobileSelect.classList.toggle("open", willOpen);
+      mobileSelect.querySelector(".mobile-select-trigger").setAttribute("aria-expanded", String(willOpen));
+    });
+    mobileSelect.querySelectorAll("[data-value]").forEach((optionButton) => {
+      optionButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        select.value = optionButton.dataset.value;
+        syncMobileDefectSelect(select);
+        closeMobileDefectSelects();
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    });
+    syncMobileDefectSelect(select);
+  });
+}
+
+function syncMobileDefectSelect(select) {
+  const mobileSelect = select?.nextElementSibling;
+  if (!mobileSelect?.classList.contains("mobile-select")) return;
+  const selectedOption = select.options[select.selectedIndex];
+  const triggerLabel = mobileSelect.querySelector(".mobile-select-trigger span");
+  if (triggerLabel) triggerLabel.textContent = selectedOption?.textContent || "请选择";
+  mobileSelect.querySelectorAll("[data-value]").forEach((button) => {
+    const selected = button.dataset.value === select.value;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
+}
+
+function syncMobileDefectSelects() {
+  document.querySelectorAll("#defectToolbar select").forEach(syncMobileDefectSelect);
+}
+
+function closeMobileDefectSelects(except = null) {
+  document.querySelectorAll("#defectToolbar .mobile-select.open").forEach((mobileSelect) => {
+    if (mobileSelect === except) return;
+    mobileSelect.classList.remove("open");
+    mobileSelect.querySelector(".mobile-select-trigger")?.setAttribute("aria-expanded", "false");
+  });
+}
+
+function updateMobileLogBackTop() {
+  const button = document.getElementById("mobileLogBackTop");
+  if (!button) return;
+  const visible = window.matchMedia("(max-width: 760px)").matches
+    && !document.body.classList.contains("login-mode")
+    && document.documentElement.scrollHeight > window.innerHeight
+    && window.scrollY >= window.innerHeight;
+  button.classList.toggle("visible", visible);
+}
+
+function setMobilePendingPanel(panel) {
+  state.mobilePendingPanel = panel === "normal" ? "normal" : "urgent";
+  document.querySelectorAll("[data-mobile-pending]").forEach((button) => {
+    const active = button.dataset.mobilePending === state.mobilePendingPanel;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  document.querySelectorAll("[data-pending-panel]").forEach((element) => {
+    element.classList.toggle("mobile-active", element.dataset.pendingPanel === state.mobilePendingPanel);
+  });
+}
 
 async function handleRouteChange() {
   const route = parseRoute();
@@ -159,6 +309,7 @@ async function handleRouteChange() {
 }
 
 document.getElementById("refreshBtn").addEventListener("click", refreshFromZentao);
+document.getElementById("mobileRefreshBtn")?.addEventListener("click", refreshFromZentao);
 document.getElementById("priorityFilter").addEventListener("change", (event) => {
   logGuestOperation("筛选优先级", getSelectedText(event.target));
   renderDefectsFromToolbar({ resetMode: true });
@@ -209,6 +360,7 @@ document.querySelectorAll("[data-scheduler-rule]").forEach((input) => {
   input.addEventListener("change", toggleSchedulerRule);
 });
 document.addEventListener("click", (event) => {
+  if (!event.target.closest(".mobile-select")) closeMobileDefectSelects();
   const ownerSelect = document.getElementById("ownerMultiSelect");
   if (!ownerSelect.contains(event.target)) ownerSelect.classList.remove("open");
   const scopeBadge = document.getElementById("ownerScopeBadge");
@@ -222,6 +374,7 @@ document.querySelectorAll(".action-card").forEach((button) => {
     const result = document.getElementById("actionResult");
     result.classList.remove("hidden");
     result.textContent = "执行中...";
+    setDynamicRegionLoading(result, true);
     try {
       const response = await fetch(button.dataset.action, { method: "POST" });
       const data = await response.json();
@@ -229,6 +382,8 @@ document.querySelectorAll(".action-card").forEach((button) => {
       await loadAll();
     } catch (error) {
       result.textContent = error.message;
+    } finally {
+      setDynamicRegionLoading(result, false);
     }
   });
 });
@@ -244,7 +399,13 @@ function initGlobalTooltips() {
   let activeTarget = null;
 
   const isTitleTooltipTarget = (target) => Boolean(target.closest?.(".defect-title-text, .title-link"));
-  const getTooltipTarget = (target) => target?.closest?.("[data-tooltip], [title]");
+  const getTooltipTarget = (target) => {
+    const tooltipTarget = target?.closest?.("[data-tooltip], [title]");
+    if (tooltipTarget?.classList.contains("brand-home") && window.matchMedia("(max-width: 760px)").matches) {
+      return null;
+    }
+    return tooltipTarget;
+  };
   const normalizeTooltipTarget = (target) => {
     if (!target) return "";
     if (!target.dataset.tooltip && target.getAttribute("title")) {
@@ -597,6 +758,15 @@ async function navigateHomeFromBrand() {
 }
 
 async function loadAll(options = {}) {
+  setDynamicDataLoading(true);
+  try {
+    return await loadAllData(options);
+  } finally {
+    setDynamicDataLoading(false);
+  }
+}
+
+async function loadAllData(options = {}) {
   const shouldShowLoading = !state.overview || options.forceLoading;
   if (shouldShowLoading) {
     state.loadingOverview = true;
@@ -611,6 +781,7 @@ async function loadAll(options = {}) {
     guestMode ? Promise.resolve({ logs: [] }) : getJson("/api/push-logs"),
     guestMode ? Promise.resolve({ logs: [] }) : getJson("/api/access-logs"),
     guestMode ? Promise.resolve({ logs: [] }) : getJson("/api/operation-logs"),
+    guestMode ? Promise.resolve({ logs: [] }) : getJson("/api/sync-logs"),
     getJson("/api/overview-pins"),
     getJson("/api/overview-requirements"),
     getJson("/api/overview-difficulties")
@@ -630,9 +801,10 @@ async function loadAll(options = {}) {
   const logs = pickSettledResult(results[5], { logs: state.logs || [] });
   const accessLogs = pickSettledResult(results[6], { logs: state.accessLogs || [] });
   const operationLogs = pickSettledResult(results[7], { logs: state.operationLogs || [] });
-  const overviewPins = pickSettledResult(results[8], { pinned: [...state.pinnedOverviewDefects] });
-  const overviewRequirements = pickSettledResult(results[9], { requirements: [...state.requirementOverviewDefects] });
-  const overviewDifficulties = pickSettledResult(results[10], { difficulties: state.overviewDefectDifficulties || {} });
+  const syncLogs = pickSettledResult(results[8], { logs: state.syncLogs || [] });
+  const overviewPins = pickSettledResult(results[9], { pinned: [...state.pinnedOverviewDefects] });
+  const overviewRequirements = pickSettledResult(results[10], { requirements: [...state.requirementOverviewDefects] });
+  const overviewDifficulties = pickSettledResult(results[11], { difficulties: state.overviewDefectDifficulties || {} });
 
   state.overview = overview;
   state.defects = defects.defects;
@@ -643,6 +815,7 @@ async function loadAll(options = {}) {
   state.logs = logs.logs;
   state.accessLogs = accessLogs.logs;
   state.operationLogs = operationLogs.logs;
+  state.syncLogs = syncLogs.logs;
   state.assignees = assignees.assignees || [];
   state.config = configData.config || state.config;
   renderOwnerScopeBadge();
@@ -655,9 +828,61 @@ async function loadAll(options = {}) {
     renderLogs();
     renderAccessLogs();
     renderOperationLogs();
+    renderSyncLogs();
     if (state.config) renderConfig();
   }
   maybeShowGuestNotificationTest();
+}
+
+function getDynamicDataRegions() {
+  return [
+    "#configStatus",
+    "#lastSyncText",
+    "#mobileLastSyncText",
+    "#metrics",
+    "#urgentCount",
+    "#normalCount",
+    "#mobileUrgentCount",
+    "#mobileNormalCount",
+    "#defectsCount",
+    "#urgentList",
+    "#normalList",
+    "#ownerTable",
+    "#mobileOwnerComparison",
+    "#defectsTable",
+    "#logsTable",
+    "#accessLogsTable",
+    "#operationLogsTable",
+    "#syncLogsTable",
+    "#settingsView .form-panel"
+  ].flatMap((selector) => Array.from(document.querySelectorAll(selector)));
+}
+
+function setDynamicDataLoading(loading) {
+  getDynamicDataRegions().forEach((element) => setDynamicRegionLoading(element, loading));
+}
+
+function setDynamicRegionLoading(element, loading) {
+  if (!element) return;
+  element.classList.add("dynamic-data-region");
+  if (loading) {
+    window.clearTimeout(element._dynamicDataTransitionTimer);
+    element.classList.remove("dynamic-data-loaded", "dynamic-data-settling");
+    element.classList.add("dynamic-data-loading");
+    const needsEmptySkeleton = element.matches("#defectsTable, #logsTable, #accessLogsTable, #operationLogsTable, #syncLogsTable");
+    element.classList.toggle("dynamic-data-empty", needsEmptySkeleton && !element.textContent.trim());
+    element.setAttribute("aria-busy", "true");
+    return;
+  }
+  const wasLoading = element.classList.contains("dynamic-data-loading");
+  element.removeAttribute("aria-busy");
+  if (!wasLoading) return;
+  element.classList.remove("dynamic-data-loading", "dynamic-data-empty");
+  element.classList.add("dynamic-data-settling", "dynamic-data-loaded");
+  element._dynamicDataTransitionTimer = window.setTimeout(() => {
+    element.classList.remove("dynamic-data-settling", "dynamic-data-loaded");
+    delete element._dynamicDataTransitionTimer;
+  }, 360);
 }
 
 function startAccessVisitTracking() {
@@ -1040,8 +1265,9 @@ function parseRoute() {
 
 function switchView(view, options = {}) {
   if (!titles[view] || !allowedViews.includes(view)) view = "overview";
+  const viewChanged = state.view !== view;
   state.view = view;
-  document.querySelector(".main").classList.toggle("list-mode", ["defects", "logs", "accessLogs", "operationLogs"].includes(view));
+  document.querySelector(".main").classList.toggle("list-mode", ["defects", "logs", "accessLogs", "operationLogs", "syncLogs"].includes(view));
   document.querySelector(".main").classList.toggle("settings-mode", view === "settings");
   placeHeroForView(view);
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
@@ -1050,12 +1276,20 @@ function switchView(view, options = {}) {
   document.getElementById("viewTitle").textContent = titles[view][0];
   document.getElementById("viewSubtitle").textContent = titles[view][1];
   renderOwnerScopeBadge();
+  updateMobileLogBackTop();
 
   const nextRoute = getScopedViewRoute(view);
   if (options.updateRoute !== false && options.replaceRoute && window.location.hash !== nextRoute) {
     window.history.replaceState(null, "", nextRoute);
   } else if (options.updateRoute !== false && window.location.hash !== nextRoute) {
     window.location.hash = nextRoute;
+  }
+
+  if (viewChanged && window.matchMedia("(max-width: 760px)").matches) {
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: "auto" });
+      updateMobileLogBackTop();
+    });
   }
 }
 
@@ -1088,19 +1322,23 @@ function renderStatus(status) {
 
 function setFetchButtonState(fetching) {
   state.fetching = fetching;
-  const button = document.getElementById("refreshBtn");
-  if (!button) return;
-  button.disabled = fetching;
-  button.classList.toggle("loading", fetching);
-  button.removeAttribute("title");
-  button.removeAttribute("aria-label");
+  ["refreshBtn", "mobileRefreshBtn"].forEach((id) => {
+    const button = document.getElementById(id);
+    if (!button) return;
+    button.disabled = fetching;
+    button.classList.toggle("loading", fetching);
+    button.removeAttribute("title");
+    button.removeAttribute("aria-label");
+  });
 }
 
 function renderLastSyncTime(value) {
   if (value !== undefined) state.lastFetchAt = value || "";
+  const text = `最近更新：${formatCompactTime(state.lastFetchAt)}`;
   const element = document.getElementById("lastSyncText");
-  if (!element) return;
-  element.textContent = `最近更新：${formatCompactTime(state.lastFetchAt)}`;
+  if (element) element.textContent = text;
+  const mobileElement = document.getElementById("mobileLastSyncText");
+  if (mobileElement) mobileElement.textContent = `更新：${formatCompactTime(state.lastFetchAt)}`;
 }
 
 function renderOverview() {
@@ -1116,7 +1354,10 @@ function renderOverview() {
 
   document.getElementById("metrics").innerHTML = metrics.map(([label, value, tone, mode]) => `
     <button class="metric ${tone}" type="button" data-defect-mode="${mode}">
-      <span class="metric-label">${label}</span>
+      <span class="metric-heading">
+        <span class="metric-icon" aria-hidden="true">${metricIcon(label)}</span>
+        <span class="metric-label">${label}</span>
+      </span>
       <strong>${value}</strong>
       <span class="metric-foot">${metricFoot(label)}</span>
     </button>
@@ -1129,6 +1370,11 @@ function renderOverview() {
   document.getElementById("normalList").innerHTML = renderDefectCards(sortPinnedDefectCards(sortDefectsForDisplay(overview.normalOpen)), false, canOperateCards);
   document.getElementById("urgentCount").textContent = overview.urgentOpen.length;
   document.getElementById("normalCount").textContent = overview.normalOpen.length;
+  document.getElementById("mobileUrgentCount").textContent = overview.urgentOpen.length;
+  document.getElementById("mobileNormalCount").textContent = overview.normalOpen.length;
+  document.querySelector('[data-mobile-overview-more="urgent"]')?.classList.toggle("hidden", overview.urgentOpen.length <= 4);
+  document.querySelector('[data-mobile-overview-more="normal"]')?.classList.toggle("hidden", overview.normalOpen.length <= 4);
+  setMobilePendingPanel(state.mobilePendingPanel);
   document.querySelectorAll("[data-pin-defect]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1170,6 +1416,7 @@ function renderOverview() {
       ownerStatButton(owner, "ownerTodayResolved", owner.todayResolved)
     ])
   );
+  renderMobileOwnerComparison(overview.owners);
   document.querySelectorAll("[data-owner-stat-mode]").forEach((button) => {
     button.addEventListener("click", () => openOwnerDefectList(button.dataset.ownerStatMode, button.dataset.owner));
   });
@@ -1181,7 +1428,10 @@ function renderOverviewLoading() {
     : ["今日新增", "今日解决", "今日关闭", "异常数据", "未完成总数", "P1/P2 未完成", "非 P1/P2 未完成", "已解决待验证"];
   document.getElementById("metrics").innerHTML = metrics.map((label) => `
     <div class="metric loading-metric" aria-busy="true">
-      <span class="metric-label">${escapeHtml(label)}</span>
+      <span class="metric-heading">
+        <span class="metric-icon loading-metric-icon"></span>
+        <span class="metric-label">${escapeHtml(label)}</span>
+      </span>
       <strong><span class="loading-number"></span></strong>
       <span class="metric-foot"><span class="loading-line short"></span></span>
     </div>
@@ -1189,6 +1439,8 @@ function renderOverviewLoading() {
 
   document.getElementById("urgentCount").innerHTML = `<span class="loading-dot"></span>`;
   document.getElementById("normalCount").innerHTML = `<span class="loading-dot"></span>`;
+  document.getElementById("mobileUrgentCount").innerHTML = `<span class="loading-dot"></span>`;
+  document.getElementById("mobileNormalCount").innerHTML = `<span class="loading-dot"></span>`;
   document.getElementById("urgentList").innerHTML = renderDefectListLoading();
   document.getElementById("normalList").innerHTML = renderDefectListLoading();
 
@@ -1196,7 +1448,62 @@ function renderOverviewLoading() {
   ownerStatsPanel?.classList.toggle("hidden", hasOwnerScope());
   if (!hasOwnerScope()) {
     document.getElementById("ownerTable").innerHTML = renderOwnerTableLoading();
+    document.getElementById("mobileOwnerComparison").innerHTML = `
+      <div class="mobile-owner-comparison-head">
+        <strong>负责人统计</strong>
+        <span>数据加载中</span>
+      </div>
+      <div class="mobile-owner-comparison-loading">
+        ${Array.from({ length: 4 }).map(() => '<span class="loading-line"></span>').join("")}
+      </div>
+    `;
   }
+}
+
+function renderMobileOwnerComparison(owners) {
+  const options = [
+    { key: "open", label: "未完成", mode: "ownerOpen", tone: "total", value: getOwnerOpenTotal },
+    { key: "urgent", label: "P1/P2", mode: "ownerUrgent", tone: "urgent", value: (owner) => Number(owner.urgentOpen || 0) },
+    { key: "todayAdded", label: "今日新增", mode: "ownerTodayAdded", tone: "incoming", value: (owner) => Number(owner.todayAdded || 0) },
+    { key: "todayResolved", label: "今日解决", mode: "ownerTodayResolved", tone: "done", value: (owner) => Number(owner.todayResolved || 0) },
+    { key: "transferred", label: "今日转出", mode: "ownerTodayTransferred", tone: "normal", value: (owner) => Number(owner.todayTransferred || 0) },
+    { key: "returned", label: "今日转入", mode: "ownerTodayReturned", tone: "incoming", value: (owner) => Number(owner.todayReturned || 0) }
+  ];
+  const selected = options.find((option) => option.key === state.mobileOwnerMetric) || options[0];
+  state.mobileOwnerMetric = selected.key;
+  const rows = [...(owners || [])]
+    .map((owner) => ({ owner, value: selected.value(owner) }))
+    .sort((left, right) => right.value - left.value || String(left.owner.name || "").localeCompare(String(right.owner.name || ""), "zh-CN"));
+  const maxValue = Math.max(1, ...rows.map((row) => row.value));
+  const container = document.getElementById("mobileOwnerComparison");
+  if (!container) return;
+  container.innerHTML = `
+    <div class="mobile-owner-comparison-head">
+      <strong>负责人统计</strong>
+      <span>${rows.length} 人</span>
+    </div>
+    <div class="mobile-owner-metric-tabs" role="tablist" aria-label="负责人统计口径">
+      ${options.map((option) => `<button class="${option.key === selected.key ? "active" : ""}" type="button" role="tab" aria-selected="${option.key === selected.key}" data-mobile-owner-metric="${option.key}">${option.label}</button>`).join("")}
+    </div>
+    <div class="mobile-owner-comparison-list ${selected.tone}">
+      ${rows.map(({ owner, value }, index) => `
+        <div class="mobile-owner-comparison-row">
+          <span class="mobile-owner-rank">${index + 1}</span>
+          <span class="mobile-owner-name">${ownerGuestLink(owner, true)}</span>
+          <button class="mobile-owner-value" type="button" data-owner-stat-mode="${selected.mode}" data-owner="${escapeHtml(owner.name || owner.account || "")}" aria-label="查看${escapeHtml(owner.name || owner.account || "")}的${selected.label}缺陷">
+            <span class="mobile-owner-bar"><i style="width:${Math.max(value > 0 ? 8 : 0, Math.round(value / maxValue * 100))}%"></i></span>
+            <strong>${value}</strong>
+          </button>
+        </div>
+      `).join("") || '<div class="empty">暂无负责人数据</div>'}
+    </div>
+  `;
+  container.querySelectorAll("[data-mobile-owner-metric]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.mobileOwnerMetric = button.dataset.mobileOwnerMetric;
+      renderOverview();
+    });
+  });
 }
 
 function renderDefectListLoading() {
@@ -1273,7 +1580,7 @@ function renderDefectCards(defects, urgent, canOperateCards = false) {
       <div class="defect-title">
         <span class="defect-id">#${escapeHtml(defect.id)}</span>
         <a class="defect-title-text" href="${escapeHtml(defect.url || "#")}" target="_blank" rel="noreferrer" data-defect-title-link="${escapeHtml(defect.id)}" title="${escapeHtml(defect.title)}">${escapeHtml(defect.title)}</a>
-        ${canOperateCards ? `<button class="pin-defect-button ${pinned ? "active" : ""}" type="button" data-pin-defect="${escapeHtml(defect.id)}" title="${pinned ? "取消置顶" : "置顶"}" aria-label="${pinned ? "取消置顶" : "置顶"}">
+        ${canOperateCards ? `<div class="defect-actions"><button class="pin-defect-button ${pinned ? "active" : ""}" type="button" data-pin-defect="${escapeHtml(defect.id)}" title="${pinned ? "取消置顶" : "置顶"}" aria-label="${pinned ? "取消置顶" : "置顶"}">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path class="pin-top-bar" d="M6 4h12" />
             <path class="pin-top-arrow" d="M12 19V8" />
@@ -1297,7 +1604,7 @@ function renderDefectCards(defects, urgent, canOperateCards = false) {
             <path d="M12 16V5" />
             <path d="M18 16v-4" />
           </svg>
-        </button>` : ""}
+        </button></div>` : ""}
       </div>
       <div class="meta">
         ${pinned ? `<span class="pill pinned">置顶</span>` : ""}
@@ -1517,13 +1824,14 @@ function ownerStatButton(owner, mode, value) {
   return `<button class="owner-stat-link" type="button" data-owner-stat-mode="${escapeHtml(mode)}" data-owner="${escapeHtml(owner.account)}" ${disabled ? "disabled" : ""} title="${disabled ? "暂无缺陷" : `查看${escapeHtml(owner.name)}的缺陷详情`}">${escapeHtml(value)}</button>`;
 }
 
-function ownerGuestLink(owner) {
+function ownerGuestLink(owner, compact = false) {
   const name = owner.name || owner.account || "";
+  const displayName = compact ? formatPersonDisplayName(name) : (name || "-");
   const guestAccount = getGuestAccountForOwner(owner);
-  if (!guestAccount) return escapeHtml(name || "-");
+  if (!guestAccount) return escapeHtml(displayName);
   const href = guestMode ? `/guest/${encodeURIComponent(guestAccount)}` : `#/${encodeURIComponent(guestAccount)}/overview`;
   const title = guestMode ? `以${escapeHtml(name)}视角打开访客页面` : `以${escapeHtml(name)}视角打开总览`;
-  return `<a class="owner-guest-link" href="${href}" title="${title}">${escapeHtml(name)}</a>`;
+  return `<a class="owner-guest-link" href="${href}" title="${title}">${escapeHtml(displayName)}</a>`;
 }
 
 function getGuestAccountForOwner(owner) {
@@ -1568,6 +1876,7 @@ function renderDefects(options = {}) {
   defects = sortDefectsByMode(defects, sort, state.defectListMode);
   state.visibleDefects = defects;
   document.getElementById("defectsCount").textContent = defects.length;
+  renderMobileFilterSummary();
   document.getElementById("defectsTable").classList.add("is-scrollable");
   renderDefectConditionBar();
 
@@ -1615,6 +1924,22 @@ function renderDefects(options = {}) {
     updateDefectRoute(Boolean(options.replaceRoute));
   }
   bindDefectTitleOperationLogs();
+}
+
+function renderMobileFilterSummary() {
+  syncMobileDefectSelects();
+  const parts = [];
+  const priority = document.getElementById("priorityFilter");
+  const status = document.getElementById("statusFilter");
+  const openedAge = document.getElementById("openedAgeFilter");
+  const sort = document.getElementById("defectSort");
+  if (priority?.value !== "all") parts.push(getSelectedText(priority));
+  if (state.ownerFilters.length) parts.push(`${state.ownerFilters.length} 位负责人`);
+  if (status?.value !== "active") parts.push(getSelectedText(status));
+  if (openedAge?.value !== "all") parts.push(getSelectedText(openedAge));
+  if (sort?.value !== "priorityHigh") parts.push(getSelectedText(sort));
+  const summary = document.getElementById("mobileFilterSummary");
+  if (summary) summary.textContent = parts.length ? parts.join(" · ") : "激活缺陷 · 优先级高到低";
 }
 
 function renderDefectsFromToolbar(options = {}) {
@@ -2075,8 +2400,9 @@ function applyDefectListMode(defects, mode) {
 }
 
 function renderLogs() {
-  const logs = getRecentPushLogs();
-  if (!logs.length) {
+  const allLogs = getRecentPushLogs();
+  const logs = getVisibleMobileLogs(allLogs, "logs");
+  if (!allLogs.length) {
     document.getElementById("logsTable").innerHTML = `<div class="empty">暂无数据</div>`;
     return;
   }
@@ -2097,7 +2423,7 @@ function renderLogs() {
         </thead>
         <tbody>
           ${logs.map((log) => `
-            <tr class="clickable-row ${log.id === state.selectedLogId ? "selected" : ""}" data-log-id="${escapeHtml(log.id)}">
+            <tr class="clickable-row mobile-log-card ${log.ok ? "is-success" : "is-error"} ${log.id === state.selectedLogId ? "selected" : ""}" data-log-id="${escapeHtml(log.id)}">
               <td>${escapeHtml(formatTime(log.createdAt))}</td>
               <td>${escapeHtml(pushTypeText(log.type))}</td>
               <td>${escapeHtml(log.title)}</td>
@@ -2109,6 +2435,7 @@ function renderLogs() {
           `).join("")}
         </tbody>
       </table>
+      ${renderMobileLogFooter("logs", logs.length, allLogs.length)}
     </div>
   `;
 
@@ -2118,6 +2445,7 @@ function renderLogs() {
       if (log) openLogModal(log);
     });
   });
+  bindMobileLogPagination("logs", allLogs.length, renderLogs);
 }
 
 function getLogAtText(log) {
@@ -2126,7 +2454,8 @@ function getLogAtText(log) {
 }
 
 function renderAccessLogs() {
-  const logs = getRecentAccessLogs();
+  const allLogs = getRecentAccessLogs();
+  const logs = getVisibleMobileLogs(allLogs, "accessLogs");
   document.getElementById("accessLogsTable").innerHTML = `
     <div class="table-scroll is-scrollable">
       <table class="access-logs-data-table">
@@ -2143,7 +2472,7 @@ function renderAccessLogs() {
         </thead>
         <tbody>
           ${logs.length ? logs.map((log) => `
-            <tr>
+            <tr class="mobile-log-card session-${["online", "away"].includes(log.sessionStatus) ? log.sessionStatus : "ended"}">
               <td>${escapeHtml(formatTime(log.accessedAt))}</td>
               <td>${escapeHtml(formatDuration(log.durationMs))}</td>
               <td>${sessionStatusBadge(log.sessionStatus)}</td>
@@ -2159,8 +2488,10 @@ function renderAccessLogs() {
           `}
         </tbody>
       </table>
+      ${renderMobileLogFooter("accessLogs", logs.length, allLogs.length)}
     </div>
   `;
+  bindMobileLogPagination("accessLogs", allLogs.length, renderAccessLogs);
 }
 
 function getRecentAccessLogs() {
@@ -2170,8 +2501,7 @@ function getRecentAccessLogs() {
       const time = new Date(log.accessedAt).getTime();
       return Number.isFinite(time) && time >= since;
     })
-    .sort((a, b) => new Date(b.accessedAt).getTime() - new Date(a.accessedAt).getTime())
-    .slice(0, 200);
+    .sort((a, b) => new Date(b.accessedAt).getTime() - new Date(a.accessedAt).getTime());
 }
 
 function accessLogTypeText(type) {
@@ -2199,7 +2529,8 @@ function formatDuration(value) {
 }
 
 function renderOperationLogs() {
-  const logs = getRecentOperationLogs();
+  const allLogs = getRecentOperationLogs();
+  const logs = getVisibleMobileLogs(allLogs, "operationLogs");
   document.getElementById("operationLogsTable").innerHTML = `
     <div class="table-scroll is-scrollable">
       <table class="operation-logs-data-table">
@@ -2214,7 +2545,7 @@ function renderOperationLogs() {
         </thead>
         <tbody>
           ${logs.length ? logs.map((log) => `
-            <tr>
+            <tr class="mobile-log-card is-operation">
               <td>${escapeHtml(formatTime(log.operatedAt))}</td>
               <td>${escapeHtml(log.ip || "-")}</td>
               <td>${escapeHtml(log.operator || "-")}</td>
@@ -2228,8 +2559,10 @@ function renderOperationLogs() {
           `}
         </tbody>
       </table>
+      ${renderMobileLogFooter("operationLogs", logs.length, allLogs.length)}
     </div>
   `;
+  bindMobileLogPagination("operationLogs", allLogs.length, renderOperationLogs);
 }
 
 function getRecentOperationLogs() {
@@ -2239,14 +2572,136 @@ function getRecentOperationLogs() {
       const time = new Date(log.operatedAt).getTime();
       return Number.isFinite(time) && time >= since;
     })
-    .sort((a, b) => new Date(b.operatedAt).getTime() - new Date(a.operatedAt).getTime())
-    .slice(0, 300);
+    .sort((a, b) => new Date(b.operatedAt).getTime() - new Date(a.operatedAt).getTime());
+}
+
+function renderSyncLogs() {
+  const allLogs = getRecentSyncLogs();
+  const logs = getVisibleMobileLogs(allLogs, "syncLogs");
+  document.getElementById("syncLogsTable").innerHTML = `
+    <div class="table-scroll is-scrollable">
+      <table class="sync-logs-data-table">
+        <thead>
+          <tr>
+            <th>同步时间</th>
+            <th>耗时</th>
+            <th>同步结果</th>
+            <th>触发</th>
+            <th>同步模式</th>
+            <th>同步数据</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${logs.length ? logs.map((log) => `
+            <tr class="mobile-log-card ${log.ok ? "is-success" : "is-error"}">
+              <td>${escapeHtml(formatTime(log.startedAt || log.finishedAt))}</td>
+              <td>${escapeHtml(formatDuration(getSyncLogDuration(log)))}</td>
+              <td>${log.ok ? badge("success", "成功") : badge("urgent", `失败：${log.error || "-"}`)}</td>
+              <td>${escapeHtml(triggerText(log.trigger))}</td>
+              <td>${escapeHtml(syncModeText(log.syncMode))}</td>
+              <td>${escapeHtml(formatSyncData(log))}</td>
+            </tr>
+          `).join("") : `
+            <tr>
+              <td class="table-empty" colspan="6">暂无同步记录</td>
+            </tr>
+          `}
+        </tbody>
+      </table>
+      ${renderMobileLogFooter("syncLogs", logs.length, allLogs.length)}
+    </div>
+  `;
+  bindMobileLogPagination("syncLogs", allLogs.length, renderSyncLogs);
+}
+
+function getVisibleMobileLogs(logs, key) {
+  if (!window.matchMedia("(max-width: 760px)").matches) return logs;
+  const limit = Math.max(mobileLogBatchSize, Number(state.mobileLogLimits[key]) || mobileLogBatchSize);
+  return logs.slice(0, limit);
+}
+
+function renderMobileLogFooter(key, visibleCount, totalCount) {
+  if (!window.matchMedia("(max-width: 760px)").matches || !totalCount) return "";
+  const hasMore = visibleCount < totalCount;
+  if (hasMore) {
+    return `<button type="button" class="mobile-log-pagination has-more" data-mobile-log-pagination="${escapeHtml(key)}"><i aria-hidden="true"></i><span>上拉加载更多</span></button>`;
+  }
+  return `<div class="mobile-log-pagination finished" data-mobile-log-pagination="${escapeHtml(key)}"><span>已加载全部 ${totalCount} 条</span></div>`;
+}
+
+function bindMobileLogPagination(key, totalCount, render) {
+  mobileLogObservers.get(key)?.disconnect();
+  mobileLogObservers.delete(key);
+  if (!window.matchMedia("(max-width: 760px)").matches) return;
+  if ((Number(state.mobileLogLimits[key]) || mobileLogBatchSize) >= totalCount) return;
+
+  window.requestAnimationFrame(() => {
+    const target = document.querySelector(`[data-mobile-log-pagination="${key}"]`);
+    if (!target) return;
+    let loaded = false;
+    const loadMore = () => {
+      if (loaded) return;
+      loaded = true;
+      mobileLogObservers.get(key)?.disconnect();
+      mobileLogObservers.delete(key);
+      state.mobileLogLimits[key] = (Number(state.mobileLogLimits[key]) || mobileLogBatchSize) + mobileLogBatchSize;
+      render();
+    };
+    target.addEventListener("click", loadMore, { once: true });
+    if (typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      loadMore();
+    }, { rootMargin: "120px 0px" });
+    mobileLogObservers.set(key, observer);
+    observer.observe(target);
+  });
+}
+
+function getRecentSyncLogs() {
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  return [...(state.syncLogs || [])]
+    .filter((log) => {
+      const time = new Date(log.startedAt || log.finishedAt).getTime();
+      return Number.isFinite(time) && time >= since;
+    })
+    .sort((a, b) => new Date(b.startedAt || b.finishedAt).getTime() - new Date(a.startedAt || a.finishedAt).getTime());
+}
+
+function getSyncLogDuration(log) {
+  const storedDuration = Number(log.durationMs);
+  if (Number.isFinite(storedDuration) && storedDuration > 0) return storedDuration;
+  const startedAt = new Date(log.startedAt).getTime();
+  const finishedAt = new Date(log.finishedAt).getTime();
+  if (Number.isFinite(startedAt) && Number.isFinite(finishedAt) && finishedAt >= startedAt) return finishedAt - startedAt;
+  return 0;
+}
+
+function syncModeText(mode) {
+  if (mode === "incremental") return "增量";
+  if (mode === "mixed") return "增量 + 新增负责人全量";
+  if (mode === "full") return "全量";
+  return mode || "-";
+}
+
+function formatSyncData(log) {
+  if (!log.ok) return log.error || "同步失败";
+  const parts = [];
+  if (Number.isFinite(Number(log.count))) parts.push(`当前缺陷 ${Number(log.count)} 条`);
+  if (Number.isFinite(Number(log.listCount))) parts.push(`列表 ${Number(log.listCount)} 条`);
+  if (Number.isFinite(Number(log.detailCount))) parts.push(`详情 ${Number(log.detailCount)} 条`);
+  if (Number.isFinite(Number(log.recentEditedCount)) && Number(log.recentEditedCount) > 0) parts.push(`近期编辑 ${Number(log.recentEditedCount)} 条`);
+  if (Number.isFinite(Number(log.recentMatchedCount)) && Number(log.recentMatchedCount) > 0) parts.push(`匹配 ${Number(log.recentMatchedCount)} 条`);
+  if (Array.isArray(log.addedAssignees) && log.addedAssignees.length) parts.push(`新增负责人 ${log.addedAssignees.join("、")}`);
+  if (Number.isFinite(Number(log.recentDetailFailureCount)) && Number(log.recentDetailFailureCount) > 0) parts.push(`详情失败 ${Number(log.recentDetailFailureCount)} 条`);
+  return parts.join("；") || "-";
 }
 
 function formatOperationAction(log) {
   const action = escapeHtml(log.action || "-");
   const detail = formatOperationDetail(log.detail);
-  return detail ? `${action}：${detail}` : action;
+  const compact = /^#\d+$/.test(String(log.detail || "").trim());
+  return `<span class="operation-action-content${compact ? " compact" : ""}"><span class="operation-action-name">${action}</span>${detail ? `<span class="operation-action-separator">：</span><span class="operation-action-detail">${detail}</span>` : ""}</span>`;
 }
 
 function formatOperationDetail(detail) {
@@ -2320,8 +2775,7 @@ function getRecentPushLogs() {
       const time = new Date(log.createdAt).getTime();
       return Number.isFinite(time) && time >= since;
     })
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-    .slice(0, 20);
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
 function renderMarkdown(markdown) {
@@ -2401,11 +2855,17 @@ function renderInlineMarkdown(value) {
 }
 
 async function loadConfig() {
-  const data = await getJson("/api/config");
-  state.config = data.config;
-  renderConfig();
-  renderOwnerFilterOptions();
-  if (state.view === "defects") renderDefects({ replaceRoute: true });
+  const panels = Array.from(document.querySelectorAll("#settingsView .form-panel"));
+  panels.forEach((panel) => setDynamicRegionLoading(panel, true));
+  try {
+    const data = await getJson("/api/config");
+    state.config = data.config;
+    renderConfig();
+    renderOwnerFilterOptions();
+    if (state.view === "defects") renderDefects({ replaceRoute: true });
+  } finally {
+    panels.forEach((panel) => setDynamicRegionLoading(panel, false));
+  }
 }
 
 function renderConfig() {
@@ -2712,7 +3172,7 @@ function renderTable(headers, rows, className = "") {
         <tr>${headers.map((header, index) => `<th class="${columnClasses[index]}">${escapeHtml(header)}</th>`).join("")}</tr>
       </thead>
       <tbody>
-        ${rows.map((row) => `<tr>${row.map((cell, index) => `<td class="${columnClasses[index]}">${renderCell(cell)}</td>`).join("")}</tr>`).join("")}
+        ${rows.map((row) => `<tr>${row.map((cell, index) => `<td class="${columnClasses[index]}" data-label="${escapeHtml(headers[index])}">${renderCell(cell)}</td>`).join("")}</tr>`).join("")}
       </tbody>
     </table>
   `;
@@ -3024,6 +3484,22 @@ function metricFoot(label) {
     已解决待验证: "等待测试验证"
   };
   return foots[label] || "";
+}
+
+function metricIcon(label) {
+  const icons = {
+    今日新增: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>',
+    今日解决: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="m8 12 2.5 2.5L16 9" /></svg>',
+    今日关闭: '<svg viewBox="0 0 24 24"><path d="M5 7h14v12H5zM4 4h16v3H4z" /><path d="M9 12h6" /></svg>',
+    今日转出: '<svg viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9" /></svg>',
+    今日转入: '<svg viewBox="0 0 24 24"><path d="m17 7-10 10M16 17H7V8" /></svg>',
+    异常数据: '<svg viewBox="0 0 24 24"><path d="M10.3 4.1 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.1a2 2 0 0 0-3.4 0Z" /><path d="M12 9v4M12 17h.01" /></svg>',
+    未完成总数: '<svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z" /><path d="M8 9h8M8 13h5" /></svg>',
+    "P1/P2 未完成": '<svg viewBox="0 0 24 24"><path d="M12 3 20 7v5c0 5-3.4 8-8 9-4.6-1-8-4-8-9V7l8-4Z" /><path d="M12 8v5M12 16h.01" /></svg>',
+    "非 P1/P2 未完成": '<svg viewBox="0 0 24 24"><path d="m4 7 2 2 3-3M11 8h9M4 13l2 2 3-3M11 14h9M4 19l2 2 3-3M11 20h9" /></svg>',
+    已解决待验证: '<svg viewBox="0 0 24 24"><path d="M9 5H6a2 2 0 0 0-2 2v12h16V7a2 2 0 0 0-2-2h-3" /><path d="M9 3h6v4H9zM8 13l2.5 2.5L16 10" /></svg>'
+  };
+  return icons[label] || '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 8v4l3 2" /></svg>';
 }
 
 function splitList(value) {

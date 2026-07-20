@@ -381,6 +381,11 @@ async function route(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/sync-logs") {
+    sendJson(res, 200, { logs: getRecentSyncLogs() });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/access-logs") {
     sendJson(res, 200, { logs: getRecentAccessLogs() });
     return;
@@ -519,6 +524,7 @@ async function doFetchAndStoreDefects(trigger) {
   let defects;
   let source = "sample";
 
+  try {
   if (config.zentao.enabled) {
     defects = await fetchZentaoDefects();
     source = "zentao";
@@ -556,6 +562,25 @@ async function doFetchAndStoreDefects(trigger) {
   await saveStore();
 
   return { ok: true, source, count: store.defects.length, detailCount: enrichment.detailCount + recentTransferEnrichment.detailCount, syncMode: syncMode.mode };
+  } catch (error) {
+    const finishedAt = new Date().toISOString();
+    store.jobRuns.push({
+      id: randomId(),
+      type: "FETCH_DEFECTS",
+      trigger,
+      source,
+      startedAt,
+      finishedAt,
+      syncMode: syncMode.mode,
+      addedAssignees,
+      durationMs: Date.now() - new Date(startedAt).getTime(),
+      ok: false,
+      error: error.message || String(error)
+    });
+    store.jobRuns = store.jobRuns.slice(-500);
+    await saveStore();
+    throw error;
+  }
 }
 
 function getLastSuccessfulFetchAt() {
@@ -1730,6 +1755,18 @@ function getRecentPushLogs() {
     .slice(0, 20);
 }
 
+function getRecentSyncLogs() {
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  return (store.jobRuns || [])
+    .filter((log) => {
+      if (log.type !== "FETCH_DEFECTS") return false;
+      const time = new Date(log.startedAt || log.finishedAt).getTime();
+      return Number.isFinite(time) && time >= since;
+    })
+    .sort((a, b) => new Date(b.startedAt || b.finishedAt).getTime() - new Date(a.startedAt || a.finishedAt).getTime())
+    .slice(0, 100);
+}
+
 function getRecentAccessLogs() {
   store.accessLogs = normalizeAccessLogs(store.accessLogs);
   const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -2286,7 +2323,7 @@ function scheduleJobs() {
 
     if (Date.now() - lastFetchAt >= fetchIntervalMs) {
       store.lastScheduledRun.fetchAt = now.toISOString();
-      fetchAndStoreDefects("schedule").catch((error) => recordJobError("FETCH_DEFECTS", error));
+      fetchAndStoreDefects("schedule").catch((error) => console.error("FETCH_DEFECTS failed", error));
     }
 
     const ruleConfig = getSchedulerRuleConfig();
@@ -2335,12 +2372,14 @@ function markScheduledTimeRun(key, dateKey, hhmm) {
 }
 
 async function recordJobError(type, error) {
+  const now = new Date().toISOString();
   store.jobRuns.push({
     id: randomId(),
     type,
     trigger: "schedule",
-    startedAt: new Date().toISOString(),
-    finishedAt: new Date().toISOString(),
+    startedAt: now,
+    finishedAt: now,
+    durationMs: 0,
     ok: false,
     error: error.message
   });

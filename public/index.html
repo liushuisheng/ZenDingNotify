@@ -27,37 +27,79 @@
     </section>
 
     <aside class="sidebar">
-      <button type="button" class="brand brand-home" id="brandHomeBtn" title="回到首页" aria-label="回到首页">
-        <div class="brand-mark">ZD</div>
-        <div>
-          <strong>ZenDing Notify</strong>
-          <span>禅道钉钉通知助手</span>
-        </div>
-      </button>
+      <div class="mobile-sidebar-head">
+        <button type="button" class="brand brand-home" id="brandHomeBtn" title="回到首页" aria-label="回到首页">
+          <div class="brand-mark">ZD</div>
+          <div>
+            <strong>ZenDing Notify</strong>
+            <span>禅道钉钉通知助手</span>
+          </div>
+        </button>
+        <button type="button" class="mobile-menu-button" id="mobileMenuBtn" aria-label="展开菜单" aria-controls="mobileMenuDrawer" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h16" />
+            <path d="M4 12h16" />
+            <path d="M4 17h16" />
+          </svg>
+        </button>
+      </div>
       <nav>
         <button class="nav-item active" data-view="overview"><span>总览</span></button>
         <button class="nav-item" data-view="defects"><span>缺陷列表</span></button>
         <button class="nav-item" data-view="accessLogs"><span>访问日志</span></button>
         <button class="nav-item" data-view="operationLogs"><span>操作日志</span></button>
+        <button class="nav-item" data-view="syncLogs"><span>同步记录</span></button>
         <button class="nav-item" data-view="logs"><span>推送记录</span></button>
         <button class="nav-item" data-view="actions"><span>手动推送</span></button>
         <button class="nav-item" data-view="settings"><span>配置</span></button>
       </nav>
-      <div class="status-box">
-        <div id="configStatus"></div>
-        <div class="role-row">
-          <span>当前角色</span>
-          <strong id="currentRoleText">访客登录</strong>
-          <button type="button" class="logout-button hidden" id="logoutBtn" title="退出登录" aria-label="退出登录">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M10 17l5-5-5-5" />
-              <path d="M15 12H3" />
-              <path d="M21 3v18" />
+      <div class="mobile-menu-backdrop" id="mobileMenuBackdrop"></div>
+      <div class="mobile-menu-drawer" id="mobileMenuDrawer">
+        <div class="mobile-menu-head">
+          <strong>菜单</strong>
+          <button type="button" class="mobile-menu-close" id="mobileMenuCloseBtn" aria-label="关闭菜单">×</button>
+        </div>
+        <nav class="drawer-nav">
+          <button class="nav-item active" data-view="overview"><span>总览</span></button>
+          <button class="nav-item" data-view="defects"><span>缺陷列表</span></button>
+          <button class="nav-item" data-view="accessLogs"><span>访问日志</span></button>
+          <button class="nav-item" data-view="operationLogs"><span>操作日志</span></button>
+          <button class="nav-item" data-view="syncLogs"><span>同步记录</span></button>
+          <button class="nav-item" data-view="logs"><span>推送记录</span></button>
+          <button class="nav-item" data-view="actions"><span>手动推送</span></button>
+          <button class="nav-item" data-view="settings"><span>配置</span></button>
+        </nav>
+        <div class="mobile-menu-sync">
+          <button class="primary icon-button" id="mobileRefreshBtn" type="button" aria-label="同步数据">
+            <svg class="refresh-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 12a9 9 0 0 1-15.3 6.4" />
+              <path d="M3 12a9 9 0 0 1 15.3-6.4" />
+              <path d="M18 2v4h-4" />
+              <path d="M6 22v-4h4" />
             </svg>
           </button>
+          <span class="last-sync mobile-last-sync" id="mobileLastSyncText">最近更新：-</span>
+        </div>
+        <div class="status-box">
+          <div id="configStatus"></div>
+          <div class="role-row">
+            <span>当前角色</span>
+            <strong id="currentRoleText">访客登录</strong>
+            <button type="button" class="logout-button hidden" id="logoutBtn" title="退出登录" aria-label="退出登录">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10 17l5-5-5-5" />
+                <path d="M15 12H3" />
+                <path d="M21 3v18" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </aside>
+
+    <button type="button" class="mobile-more-fab" id="mobileMenuFab" aria-label="展开更多菜单" aria-controls="mobileMenuDrawer" aria-expanded="false">
+      <span aria-hidden="true"></span>
+    </button>
 
     <main class="main">
       <header class="hero">
@@ -85,8 +127,16 @@
 
       <section id="overviewView" class="view active">
         <div class="metrics" id="metrics"></div>
+        <div class="mobile-pending-switch" role="tablist" aria-label="待处理缺陷分类">
+          <button class="active" type="button" role="tab" aria-selected="true" data-mobile-pending="urgent">
+            P1/P2 <span id="mobileUrgentCount">0</span>
+          </button>
+          <button type="button" role="tab" aria-selected="false" data-mobile-pending="normal">
+            普通缺陷 <span id="mobileNormalCount">0</span>
+          </button>
+        </div>
         <div class="split">
-          <section class="panel urgent-panel">
+          <section class="panel urgent-panel overview-pending-panel mobile-active" data-pending-panel="urgent">
             <div class="panel-head">
               <div>
                 <h2>P1/P2 待处理 <span class="count-badge" id="urgentCount">0</span></h2>
@@ -95,8 +145,9 @@
               <span class="head-tag urgent">紧急</span>
             </div>
             <div id="urgentList" class="defect-list"></div>
+            <button class="mobile-overview-more" type="button" data-mobile-overview-more="urgent">查看全部 P1/P2 缺陷</button>
           </section>
-          <section class="panel">
+          <section class="panel overview-pending-panel" data-pending-panel="normal">
             <div class="panel-head">
               <div>
                 <h2>非 P1/P2 待处理 <span class="count-badge" id="normalCount">0</span></h2>
@@ -105,12 +156,14 @@
               <span class="head-tag normal">普通</span>
             </div>
             <div id="normalList" class="defect-list"></div>
+            <button class="mobile-overview-more" type="button" data-mobile-overview-more="normal">查看全部普通缺陷</button>
           </section>
         </div>
         <section class="panel owner-stats-panel">
           <div class="panel-head">
             <h2>负责人统计</h2>
           </div>
+          <div class="mobile-owner-comparison" id="mobileOwnerComparison"></div>
           <div id="ownerTable"></div>
         </section>
       </section>
@@ -120,7 +173,15 @@
           <span id="defectConditionText"></span>
           <button type="button" class="condition-close" id="clearDefectCondition" aria-label="清除筛选">×</button>
         </div>
-        <div class="toolbar">
+        <button type="button" class="mobile-filter-toggle" id="mobileFilterToggle" aria-expanded="false" aria-controls="defectToolbar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" /></svg>
+          <span>
+            <strong>筛选与排序</strong>
+            <small id="mobileFilterSummary">默认筛选</small>
+          </span>
+          <svg class="mobile-filter-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4" /></svg>
+        </button>
+        <div class="toolbar" id="defectToolbar">
           <select id="priorityFilter">
             <option value="all">全部优先级</option>
             <option value="urgent">仅 P1/P2</option>
@@ -148,6 +209,7 @@
             <option value="overdue">更早之前</option>
           </select>
           <button type="button" class="secondary reset-filter-button" id="resetDefectFiltersBtn">重置</button>
+          <button type="button" class="primary mobile-filter-done" id="mobileFilterDone">完成</button>
         </div>
         <section class="panel">
           <div class="panel-head compact">
@@ -179,17 +241,39 @@
         </section>
       </section>
 
+      <section id="syncLogsView" class="view">
+        <section class="panel">
+          <div id="syncLogsTable"></div>
+        </section>
+      </section>
+
       <section id="actionsView" class="view">
         <div class="action-grid">
           <button class="action-card danger" data-action="/api/actions/push/p1p2">
-            <span class="action-icon">18:00</span>
-            <strong>P1/P2 风险提醒</strong>
-            <span>模拟每天 18:00 的紧急缺陷提醒</span>
+            <span class="action-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
+            </span>
+            <span class="action-copy">
+              <small>每日 18:00</small>
+              <strong>P1/P2 风险提醒</strong>
+              <span>发送当前紧急缺陷提醒</span>
+            </span>
+            <span class="action-arrow" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg>
+            </span>
           </button>
           <button class="action-card danger" data-action="/api/actions/push/overdue">
-            <span class="action-icon">超期</span>
-            <strong>超期缺陷单</strong>
-            <span>推送当前超期激活缺陷列表</span>
+            <span class="action-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+            </span>
+            <span class="action-copy">
+              <small>当前数据</small>
+              <strong>超期缺陷单</strong>
+              <span>发送当前超期激活缺陷列表</span>
+            </span>
+            <span class="action-arrow" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg>
+            </span>
           </button>
         </div>
         <pre id="actionResult" class="result hidden"></pre>
@@ -375,6 +459,10 @@
         </form>
       </section>
     </main>
+
+    <button type="button" class="mobile-log-back-top" id="mobileLogBackTop" aria-label="回到顶部">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg>
+    </button>
 
     <div class="guest-notification-stack" id="guestNotificationStack" aria-live="polite"></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
