@@ -6,7 +6,7 @@
 
 ## 在线演示
 
-- 演示地址：<https://liushuisheng.github.io/ZenDingNotify/>
+- 演示地址：<https://lss.is-a.dev/ZenDingNotify/>
 - 演示口令：`123456`
 - 演示分支：`demo`
 
