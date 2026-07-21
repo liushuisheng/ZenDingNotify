@@ -279,6 +279,116 @@
     };
   }
 
+  function dateKey(dayOffset = 0) {
+    return dateTime(dayOffset).slice(0, 10);
+  }
+
+  function formatDayLabel(value) {
+    const [, month, day] = String(value).split("-");
+    return `${month}/${day}`;
+  }
+
+  function buildDemoTrendData(state, owner, granularity = "day") {
+    const normalizedGranularity = ["day", "week", "month"].includes(granularity) ? granularity : "day";
+    const scopedDefects = state.defects.filter((item) => matchesOwner(item, owner));
+    const current = buildOverview(state, owner).stats;
+    const ownerIndex = Math.max(0, assignees.findIndex((name) => name === owner || aliases[name] === owner));
+    const scopeFactor = owner ? 1 + ownerIndex * 0.08 : 2.6;
+    const count = normalizedGranularity === "day" ? 14 : 12;
+    const points = Array.from({ length: count }, (_, index) => {
+      const distance = count - index - 1;
+      const dayOffset = normalizedGranularity === "day" ? -distance : normalizedGranularity === "week" ? -distance * 7 : -distance * 30;
+      const date = dateKey(dayOffset);
+      const wave = (index + ownerIndex) % 4;
+      const openTotal = Math.max(0, current.openTotal + Math.round((distance % 5 - 2) * scopeFactor));
+      const urgentOpen = Math.min(openTotal, Math.max(0, current.urgentOpen + (distance % 3) - 1));
+      const periodMultiplier = normalizedGranularity === "day" ? 1 : normalizedGranularity === "week" ? 4 : 12;
+      return {
+        date,
+        endDate: date,
+        label: normalizedGranularity === "day" ? formatDayLabel(date) : normalizedGranularity === "week" ? `第${index + 1}周` : `${new Date(`${date}T00:00:00`).getMonth() + 1}月`,
+        todayAdded: Math.max(0, Math.round((1 + wave) * scopeFactor * periodMultiplier / 2)),
+        todayResolved: Math.max(0, Math.round((1 + ((wave + 2) % 4)) * scopeFactor * periodMultiplier / 2)),
+        todayClosed: Math.max(0, Math.round((wave % 3) * scopeFactor * periodMultiplier / 2)),
+        todayTransferred: owner ? Math.max(0, Math.round((wave % 2) * periodMultiplier / 2)) : 0,
+        todayReturned: owner ? Math.max(0, Math.round(((wave + 1) % 2) * periodMultiplier / 2)) : 0,
+        openTotal,
+        urgentOpen,
+        normalOpen: Math.max(0, openTotal - urgentOpen),
+        resolvedPendingVerify: Math.max(0, current.resolvedPendingVerify + (distance % 3) - 1),
+        abnormalOpen: distance % 6 === 0 ? 1 : 0,
+        snapshotRecordedAt: `${date} 18:00:00`
+      };
+    });
+    const latest = points.at(-1);
+    if (latest) {
+      Object.assign(latest, {
+        todayAdded: current.todayAdded,
+        todayResolved: current.todayResolved,
+        todayClosed: current.todayClosed,
+        openTotal: current.openTotal,
+        urgentOpen: current.urgentOpen,
+        normalOpen: current.normalOpen,
+        resolvedPendingVerify: current.resolvedPendingVerify,
+        abnormalOpen: current.abnormalOpen
+      });
+    }
+    return {
+      granularity: normalizedGranularity,
+      owner: owner || "",
+      ownerName: owner || "全部负责人",
+      generatedAt: new Date().toISOString(),
+      retentionDays: 90,
+      points,
+      demoDefectCount: scopedDefects.length
+    };
+  }
+
+  function buildDemoTrendSnapshot(state, owner, date) {
+    const availableDates = Array.from({ length: 14 }, (_, index) => dateKey(index - 13));
+    const available = availableDates.includes(date);
+    if (!available) return { date, owner: owner || "", ownerName: owner || "全部负责人", available: false, recordedAt: "", metrics: null, defectIds: null, availableDates };
+    const point = buildDemoTrendData(state, owner, "day").points.find((item) => item.date === date);
+    const defects = state.defects.filter((item) => matchesOwner(item, owner));
+    const ids = (items) => items.map((item) => String(item.id));
+    const open = defects.filter(isOpen);
+    const urgent = open.filter((item) => ["1", "2"].includes(item.priority));
+    const normal = open.filter((item) => !["1", "2"].includes(item.priority));
+    const resolved = defects.filter((item) => item.status === "resolved");
+    return {
+      date,
+      owner: owner || "",
+      ownerName: owner || "全部负责人",
+      available: true,
+      recordedAt: `${date} 18:00:00`,
+      metrics: {
+        todayAdded: point.todayAdded,
+        todayResolved: point.todayResolved,
+        todayClosed: point.todayClosed,
+        todayTransferred: point.todayTransferred,
+        todayReturned: point.todayReturned,
+        openTotal: point.openTotal,
+        urgentOpen: point.urgentOpen,
+        normalOpen: point.normalOpen,
+        resolvedPendingVerify: point.resolvedPendingVerify,
+        abnormalOpen: point.abnormalOpen
+      },
+      defectIds: {
+        todayAdded: ids(defects.slice(0, point.todayAdded)),
+        todayResolved: ids(resolved.slice(0, point.todayResolved)),
+        todayClosed: ids(defects.filter((item) => item.status === "closed").slice(0, point.todayClosed)),
+        todayTransferred: ids(defects.filter((item) => item.transferFrom).slice(0, point.todayTransferred)),
+        todayReturned: ids(defects.filter((item) => item.transferTo).slice(0, point.todayReturned)),
+        openTotal: ids(open),
+        urgentOpen: ids(urgent),
+        normalOpen: ids(normal),
+        resolvedPendingVerify: ids(resolved),
+        abnormalOpen: []
+      },
+      availableDates
+    };
+  }
+
   function json(data, status = 200) {
     return new Response(JSON.stringify(data), {
       status,
@@ -338,6 +448,8 @@
     }
 
     if (url.pathname === "/api/overview") return json(buildOverview(state, owner));
+    if (url.pathname === "/api/trends") return json(buildDemoTrendData(state, owner, url.searchParams.get("granularity")));
+    if (url.pathname === "/api/trend-snapshot") return json(buildDemoTrendSnapshot(state, owner, url.searchParams.get("date") || dateKey()));
     if (url.pathname === "/api/defects") return json({ defects: state.defects.filter((item) => matchesOwner(item, owner)) });
     if (url.pathname === "/api/assignees") return json({ assignees: [...assignees] });
     if (url.pathname === "/api/push-logs") return json({ logs: state.pushLogs });

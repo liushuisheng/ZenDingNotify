@@ -5,6 +5,15 @@ const state = {
   accessLogs: [],
   operationLogs: [],
   syncLogs: [],
+  systemLogTab: "access",
+  trends: null,
+  trendSnapshot: null,
+  trendSnapshotDate: "",
+  trendSnapshotCalendarMonth: "",
+  trendSnapshotDefectFilter: null,
+  trendGranularity: "day",
+  trendChartInstances: [],
+  trendDefectRange: null,
   config: null,
   assignees: [],
   defectListMode: "all",
@@ -50,22 +59,18 @@ const difficultyOptions = [
 
 const titles = {
   overview: ["总览", "当天缺陷处理情况与剩余风险"],
+  trends: ["缺陷趋势", "回看缺陷处理效率与存量风险变化"],
   defects: ["缺陷列表", "查看当前抓取到的缺陷快照"],
-  logs: ["推送记录", "查看钉钉推送内容、结果和触发来源"],
-  accessLogs: ["访问日志", "查看总览和个人视角访问记录"],
-  operationLogs: ["操作日志", "查看个人访客的页面操作记录"],
-  syncLogs: ["同步记录", "查看禅道数据同步时间、结果和数据变化"],
+  systemLogs: ["系统日志", "查看访问、操作、同步和推送日志"],
   actions: ["手动推送", "手动触发日报与风险提醒"],
-  settings: ["配置", "切换真实禅道数据、钉钉机器人和推送规则"]
+  settings: ["基础配置", "切换真实禅道数据、钉钉机器人和推送规则"]
 };
 
 const viewRoutes = {
   overview: "#/overview",
+  trends: "#/trends",
   defects: "#/defects",
-  logs: "#/logs",
-  accessLogs: "#/access-logs",
-  operationLogs: "#/operation-logs",
-  syncLogs: "#/sync-logs",
+  systemLogs: "#/system-logs",
   actions: "#/actions",
   settings: "#/settings"
 };
@@ -73,7 +78,7 @@ const viewRoutes = {
 const guestPathParts = window.location.pathname.split("/").filter(Boolean);
 const guestMode = guestPathParts[0] === "guest";
 const guestOwner = guestMode && guestPathParts[1] ? decodeURIComponent(guestPathParts[1]) : "";
-const guestViews = ["overview", "defects"];
+const guestViews = ["overview", "trends", "defects"];
 const allowedViews = guestMode ? guestViews : Object.keys(titles);
 
 const roleGroups = [
@@ -136,6 +141,7 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeMobileMenu();
+    if (!closeTrendSnapshotCalendar()) closeTrendSnapshotDrawer();
     closeConfirmModal(false);
     closeLogModal();
   }
@@ -152,12 +158,40 @@ document.getElementById("mobileLogBackTop")?.addEventListener("click", () => {
 });
 window.addEventListener("scroll", updateMobileLogBackTop, { passive: true });
 window.addEventListener("resize", updateMobileLogBackTop);
+window.addEventListener("resize", resizeTrendCharts);
 initMobileDefectSelects();
 document.querySelectorAll("[data-mobile-pending]").forEach((button) => {
   button.addEventListener("click", () => setMobilePendingPanel(button.dataset.mobilePending));
 });
 document.querySelectorAll("[data-mobile-overview-more]").forEach((button) => {
   button.addEventListener("click", () => openDefectList(button.dataset.mobileOverviewMore));
+});
+document.querySelectorAll("[data-system-log-tab]").forEach((button) => {
+  button.addEventListener("click", () => setSystemLogTab(button.dataset.systemLogTab));
+  button.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = [...document.querySelectorAll("[data-system-log-tab]")];
+    const currentIndex = tabs.indexOf(button);
+    const offset = event.key === "ArrowRight" ? 1 : -1;
+    const nextButton = tabs[(currentIndex + offset + tabs.length) % tabs.length];
+    setSystemLogTab(nextButton.dataset.systemLogTab);
+    nextButton.focus();
+  });
+});
+document.querySelectorAll("[data-trend-granularity]").forEach((button) => {
+  button.addEventListener("click", () => loadTrends(button.dataset.trendGranularity));
+});
+document.getElementById("openTrendSnapshot")?.addEventListener("click", openTrendSnapshotDrawer);
+document.getElementById("closeTrendSnapshot")?.addEventListener("click", closeTrendSnapshotDrawer);
+document.getElementById("closeTrendSnapshotBackdrop")?.addEventListener("click", closeTrendSnapshotDrawer);
+document.getElementById("trendSnapshotPrev")?.addEventListener("click", () => moveTrendSnapshot(-1));
+document.getElementById("trendSnapshotNext")?.addEventListener("click", () => moveTrendSnapshot(1));
+document.getElementById("trendSnapshotDateTrigger")?.addEventListener("click", toggleTrendSnapshotCalendar);
+document.getElementById("trendCalendarPrev")?.addEventListener("click", () => moveTrendCalendarMonth(-1));
+document.getElementById("trendCalendarNext")?.addEventListener("click", () => moveTrendCalendarMonth(1));
+document.getElementById("trendSnapshotDrawer")?.addEventListener("click", (event) => {
+  if (!event.target.closest(".trend-snapshot-date-control")) closeTrendSnapshotCalendar();
 });
 
 function openMobileMenu() {
@@ -282,6 +316,7 @@ async function handleRouteChange() {
   updateOwnerScopeUi();
   switchView(getViewFromRoute(), { updateRoute: false });
   if (previousOwnerScope !== state.ownerScope && state.authenticated) {
+    state.trendSnapshot = null;
     try {
       await loadAll();
     } catch (error) {
@@ -336,6 +371,11 @@ document.getElementById("logoutBtn").addEventListener("click", logoutAdmin);
 document.getElementById("brandHomeBtn").addEventListener("click", navigateHomeFromBrand);
 document.getElementById("reloadConfigBtn").addEventListener("click", loadConfig);
 document.getElementById("resetGuestPasswordBtn").addEventListener("click", resetGuestPassword);
+document.getElementById("openPushLogsBtn").addEventListener("click", () => {
+  setSystemLogTab("push", { updateRoute: false });
+  switchView("systemLogs");
+  closeMobileMenu();
+});
 document.getElementById("scheduleEnabled").addEventListener("change", toggleSchedulerEnabled);
 document.getElementById("addP1P2Time").addEventListener("click", () => addP1P2TimeInput(""));
 document.querySelectorAll("[data-time-target]").forEach((element) => {
@@ -602,7 +642,7 @@ function renderOwnerScopeBadge() {
   const badge = document.getElementById("ownerScopeBadge");
   if (!badge) return;
   const isAdmin = !guestMode && state.authenticated;
-  const isScopedView = ["overview", "defects"].includes(state.view);
+  const isScopedView = ["overview", "trends", "defects"].includes(state.view);
   const activeOwner = getActiveOwnerScope();
   const shouldShow = (isAdmin && (Boolean(state.ownerScope) ? isScopedView : state.view === "overview"))
     || (guestMode && isScopedView);
@@ -646,7 +686,8 @@ function renderOwnerScopeBadge() {
         return;
       }
       if (guestMode) {
-        window.location.href = `/guest/${encodeURIComponent(nextOwner)}${state.view === "defects" ? "#/defects" : ""}`;
+        const scopedHash = state.view === "overview" ? "" : `#/${state.view}`;
+        window.location.href = `/guest/${encodeURIComponent(nextOwner)}${scopedHash}`;
         return;
       }
       window.location.hash = `#/${encodeURIComponent(nextOwner)}/${state.view || "overview"}`;
@@ -771,6 +812,12 @@ async function loadAllData(options = {}) {
     state.loadingOverview = true;
     renderOverviewLoading();
   }
+  const route = parseRoute();
+  const snapshotDate = route.view === "defects" ? String(route.params.get("snapshotDate") || "") : "";
+  const snapshotMetric = route.view === "defects" ? String(route.params.get("snapshotMetric") || "") : "";
+  const snapshotRequest = /^\d{4}-\d{2}-\d{2}$/.test(snapshotDate) && isTrendSnapshotMetric(snapshotMetric)
+    ? getJson(scopedApiUrl(`/api/trend-snapshot?date=${encodeURIComponent(snapshotDate)}`))
+    : Promise.resolve(null);
   const results = await Promise.allSettled([
     getJson(scopedApiUrl("/api/overview")),
     getJson(scopedApiUrl("/api/defects")),
@@ -783,7 +830,8 @@ async function loadAllData(options = {}) {
     guestMode ? Promise.resolve({ logs: [] }) : getJson("/api/sync-logs"),
     getJson("/api/overview-pins"),
     getJson("/api/overview-requirements"),
-    getJson("/api/overview-difficulties")
+    getJson("/api/overview-difficulties"),
+    snapshotRequest
   ]);
   state.loadingOverview = false;
 
@@ -804,6 +852,7 @@ async function loadAllData(options = {}) {
   const overviewPins = pickSettledResult(results[9], { pinned: [...state.pinnedOverviewDefects] });
   const overviewRequirements = pickSettledResult(results[10], { requirements: [...state.requirementOverviewDefects] });
   const overviewDifficulties = pickSettledResult(results[11], { difficulties: state.overviewDefectDifficulties || {} });
+  const routeSnapshot = pickSettledResult(results[12], null);
 
   state.overview = overview;
   state.defects = defects.defects;
@@ -817,6 +866,9 @@ async function loadAllData(options = {}) {
   state.syncLogs = syncLogs.logs;
   state.assignees = assignees.assignees || [];
   state.config = configData.config || state.config;
+  state.trendSnapshotDefectFilter = routeSnapshot && isTrendSnapshotMetric(snapshotMetric)
+    ? createTrendSnapshotDefectFilter(routeSnapshot, snapshotMetric)
+    : null;
   renderOwnerScopeBadge();
   renderStatus(status);
   renderOverview();
@@ -830,6 +882,7 @@ async function loadAllData(options = {}) {
     renderSyncLogs();
     if (state.config) renderConfig();
   }
+  if (state.view === "trends") await loadTrends(state.trendGranularity, { quiet: true });
   maybeShowGuestNotificationTest();
 }
 
@@ -848,6 +901,8 @@ function getDynamicDataRegions() {
     "#normalList",
     "#ownerTable",
     "#mobileOwnerComparison",
+    "#trendSummary",
+    "#trendCharts",
     "#defectsTable",
     "#logsTable",
     "#accessLogsTable",
@@ -1016,8 +1071,9 @@ function getSelectedText(select) {
 function scopedApiUrl(path) {
   const owner = getActiveOwnerScope();
   if (!owner) return path;
-  const params = new URLSearchParams({ owner });
-  return `${path}?${params.toString()}`;
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set("owner", owner);
+  return `${url.pathname}${url.search}`;
 }
 
 async function notifyGuestOwnerNewDefects(defects, shouldNotify) {
@@ -1276,9 +1332,62 @@ function getViewFromRoute() {
   return view && titles[view] && allowedViews.includes(view) ? view : "overview";
 }
 
+function normalizeSystemLogTab(value) {
+  return ["access", "operation", "sync", "push"].includes(value) ? value : "access";
+}
+
+function applySystemLogRouteParams() {
+  const route = parseRoute();
+  if (route.view === "systemLogs") {
+    state.systemLogTab = normalizeSystemLogTab(route.params.get("tab"));
+  }
+  renderSystemLogTabs();
+}
+
+function renderSystemLogTabs() {
+  document.querySelectorAll("[data-system-log-tab]").forEach((button) => {
+    const active = button.dataset.systemLogTab === state.systemLogTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll("[data-system-log-panel]").forEach((panel) => {
+    const active = panel.dataset.systemLogPanel === state.systemLogTab;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  });
+  window.requestAnimationFrame(updateMobileLogBackTop);
+}
+
+function buildSystemLogRoute() {
+  const params = new URLSearchParams({ tab: normalizeSystemLogTab(state.systemLogTab) });
+  return `${getScopedViewRoute("systemLogs")}?${params.toString()}`;
+}
+
+function setSystemLogTab(tab, options = {}) {
+  const nextTab = normalizeSystemLogTab(tab);
+  if (state.systemLogTab === nextTab && options.updateRoute === false) return;
+  state.systemLogTab = nextTab;
+  renderSystemLogTabs();
+  if (options.updateRoute === false) return;
+  const nextRoute = buildSystemLogRoute();
+  if (window.location.hash !== nextRoute) window.history.pushState(null, "", nextRoute);
+}
+
 function parseRoute() {
   const hash = window.location.hash || viewRoutes.overview;
   const [path, query = ""] = hash.split("?");
+  const legacySystemLogTabs = {
+    "#/access-logs": "access",
+    "#/operation-logs": "operation",
+    "#/sync-logs": "sync",
+    "#/logs": "push"
+  };
+  if (legacySystemLogTabs[path]) {
+    const params = new URLSearchParams(query);
+    params.set("tab", legacySystemLogTabs[path]);
+    return { owner: "", view: "systemLogs", path, params };
+  }
   const routeView = Object.entries(viewRoutes).find(([, route]) => route === path)?.[0];
   if (routeView) return { owner: "", view: routeView, path, params: new URLSearchParams(query) };
 
@@ -1289,6 +1398,12 @@ function parseRoute() {
       return part;
     }
   });
+  const legacyScopedSystemLogTabs = { accessLogs: "access", operationLogs: "operation", syncLogs: "sync", logs: "push" };
+  if (!guestMode && parts.length >= 2 && legacyScopedSystemLogTabs[parts[1]]) {
+    const params = new URLSearchParams(query);
+    params.set("tab", legacyScopedSystemLogTabs[parts[1]]);
+    return { owner: parts[0], view: "systemLogs", path, params };
+  }
   if (!guestMode && parts.length >= 2 && titles[parts[1]]) {
     return { owner: parts[0], view: parts[1], path, params: new URLSearchParams(query) };
   }
@@ -1299,7 +1414,7 @@ function switchView(view, options = {}) {
   if (!titles[view] || !allowedViews.includes(view)) view = "overview";
   const viewChanged = state.view !== view;
   state.view = view;
-  document.querySelector(".main").classList.toggle("list-mode", ["defects", "logs", "accessLogs", "operationLogs", "syncLogs"].includes(view));
+  document.querySelector(".main").classList.toggle("list-mode", ["defects", "systemLogs"].includes(view));
   document.querySelector(".main").classList.toggle("settings-mode", view === "settings");
   placeHeroForView(view);
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
@@ -1307,10 +1422,18 @@ function switchView(view, options = {}) {
   document.getElementById(`${view}View`).classList.add("active");
   document.getElementById("viewTitle").textContent = titles[view][0];
   document.getElementById("viewSubtitle").textContent = titles[view][1];
+  document.getElementById("openPushLogsBtn")?.classList.toggle("hidden", view !== "actions");
+  document.getElementById("openTrendSnapshot")?.classList.toggle("hidden", view !== "trends");
+  if (view === "systemLogs") applySystemLogRouteParams();
   renderOwnerScopeBadge();
   updateMobileLogBackTop();
+  if (view === "trends" && (viewChanged || !state.trends)) {
+    loadTrends(state.trendGranularity, { quiet: true }).catch((error) => {
+      showToast(error.message || "趋势数据加载失败", "error");
+    });
+  }
 
-  const nextRoute = getScopedViewRoute(view);
+  const nextRoute = view === "systemLogs" ? buildSystemLogRoute() : getScopedViewRoute(view);
   if (options.updateRoute !== false && options.replaceRoute && window.location.hash !== nextRoute) {
     window.history.replaceState(null, "", nextRoute);
   } else if (options.updateRoute !== false && window.location.hash !== nextRoute) {
@@ -1454,6 +1577,565 @@ function renderOverview() {
   });
 }
 
+async function loadTrends(granularity = "day", options = {}) {
+  const nextGranularity = ["day", "week", "month"].includes(granularity) ? granularity : "day";
+  state.trendGranularity = nextGranularity;
+  renderTrendTabs();
+  const summary = document.getElementById("trendSummary");
+  const charts = document.getElementById("trendCharts");
+  setDynamicRegionLoading(summary, true);
+  setDynamicRegionLoading(charts, true);
+  if (!state.trends) renderTrendsLoading();
+  try {
+    const separator = "/api/trends".includes("?") ? "&" : "?";
+    const data = await getJson(scopedApiUrl(`/api/trends${separator}granularity=${nextGranularity}`));
+    if (state.trendGranularity !== nextGranularity) return;
+    state.trends = data;
+    renderTrends();
+  } catch (error) {
+    if (!options.quiet) showToast(error.message || "趋势数据加载失败", "error");
+    if (!state.trends) renderTrendError(error.message || "趋势数据加载失败");
+    throw error;
+  } finally {
+    setDynamicRegionLoading(summary, false);
+    setDynamicRegionLoading(charts, false);
+  }
+}
+
+async function loadTrendSnapshot(date = getLocalDateKey(), options = {}) {
+  const nextDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ? String(date) : getLocalDateKey();
+  state.trendSnapshotDate = nextDate;
+  const metrics = document.getElementById("trendSnapshotMetrics");
+  state.trendSnapshotCalendarMonth = nextDate.slice(0, 7);
+  setDynamicRegionLoading(metrics, true);
+  if (!state.trendSnapshot) renderTrendSnapshotLoading();
+  try {
+    const data = await getJson(scopedApiUrl(`/api/trend-snapshot?date=${encodeURIComponent(nextDate)}`));
+    if (state.trendSnapshotDate !== nextDate) return;
+    state.trendSnapshot = data;
+    renderTrendSnapshot();
+  } catch (error) {
+    if (!options.quiet) showToast(error.message || "每日快照加载失败", "error");
+    if (!state.trendSnapshot) renderTrendSnapshotError(error.message || "每日快照加载失败");
+    throw error;
+  } finally {
+    setDynamicRegionLoading(metrics, false);
+  }
+}
+
+function renderTrendSnapshotLoading() {
+  const metrics = document.getElementById("trendSnapshotMetrics");
+  if (!metrics) return;
+  metrics.innerHTML = Array.from({ length: hasOwnerScope() ? 10 : 8 }).map(() => `
+    <div class="trend-snapshot-card loading-card"><span class="loading-line short"></span><strong><span class="loading-number"></span></strong></div>
+  `).join("");
+}
+
+function renderTrendSnapshotError(message) {
+  const metrics = document.getElementById("trendSnapshotMetrics");
+  if (metrics) metrics.innerHTML = `<div class="trend-snapshot-message"><strong>快照暂时无法加载</strong><span>${escapeHtml(message)}</span></div>`;
+}
+
+function renderTrendSnapshot() {
+  const snapshot = state.trendSnapshot;
+  const metricsContainer = document.getElementById("trendSnapshotMetrics");
+  if (!snapshot || !metricsContainer) return;
+  const dates = snapshot.availableDates || [];
+  const selectedDate = document.getElementById("trendSnapshotSelectedDate");
+  if (selectedDate) selectedDate.textContent = formatSnapshotDate(snapshot.date);
+  renderTrendSnapshotCalendar();
+  updateTrendSnapshotNavigation();
+  if (!snapshot.available || !snapshot.metrics) {
+    metricsContainer.innerHTML = `
+      <div class="trend-snapshot-message">
+        <strong>该日期暂无快照</strong>
+        <span>请选择有快照的日期查看。</span>
+      </div>`;
+    return;
+  }
+  const configs = hasOwnerScope()
+    ? [
+        ["当日新增", "todayAdded", "incoming"], ["当日解决", "todayResolved", "done"],
+        ["当日关闭", "todayClosed", "done"], ["当日转出", "todayTransferred", "incoming"],
+        ["当日转入", "todayReturned", "incoming"], ["未完成总数", "openTotal", "total"],
+        ["P1/P2 未完成", "urgentOpen", "urgent"], ["非 P1/P2 未完成", "normalOpen", "normal"],
+        ["已解决待验证", "resolvedPendingVerify", "done"], ["异常数据", "abnormalOpen", "urgent"]
+      ]
+    : [
+        ["当日新增", "todayAdded", "incoming"], ["当日解决", "todayResolved", "done"],
+        ["当日关闭", "todayClosed", "done"], ["异常数据", "abnormalOpen", "urgent"],
+        ["未完成总数", "openTotal", "total"], ["P1/P2 未完成", "urgentOpen", "urgent"],
+        ["非 P1/P2 未完成", "normalOpen", "normal"], ["已解决待验证", "resolvedPendingVerify", "done"]
+      ];
+  metricsContainer.classList.toggle("owner-snapshot", hasOwnerScope());
+  metricsContainer.innerHTML = configs.map(([label, key, tone]) => `
+    <button class="trend-snapshot-card ${tone} ${label.length >= 9 ? "very-long-label" : label.length >= 7 ? "long-label" : ""}" type="button" data-snapshot-metric="${key}" aria-label="查看${escapeHtml(formatSnapshotDate(snapshot.date))}${escapeHtml(label)}缺陷详情">
+      <span class="trend-snapshot-card-title"><span class="trend-snapshot-card-icon" aria-hidden="true">${metricIcon(label.replace("当日", "今日"))}</span><span>${label}</span></span>
+      <strong>${Number(snapshot.metrics[key]) || 0}</strong>
+    </button>
+  `).join("");
+  metricsContainer.querySelectorAll("[data-snapshot-metric]").forEach((card) => {
+    card.addEventListener("click", () => openTrendSnapshotDefectList(card.dataset.snapshotMetric));
+  });
+}
+
+function getTrendSnapshotMetricLabels() {
+  return {
+    todayAdded: "当日新增",
+    todayResolved: "当日解决",
+    todayClosed: "当日关闭",
+    todayTransferred: "当日转出",
+    todayReturned: "当日转入",
+    openTotal: "未完成总数",
+    urgentOpen: "P1/P2 未完成",
+    normalOpen: "非 P1/P2 未完成",
+    resolvedPendingVerify: "已解决待验证",
+    abnormalOpen: "异常数据"
+  };
+}
+
+function isTrendSnapshotMetric(metric) {
+  return Object.prototype.hasOwnProperty.call(getTrendSnapshotMetricLabels(), metric);
+}
+
+function createTrendSnapshotDefectFilter(snapshot, metric) {
+  const ids = snapshot?.defectIds?.[metric];
+  return {
+    date: String(snapshot?.date || ""),
+    metric,
+    label: getTrendSnapshotMetricLabels()[metric] || "快照明细",
+    hasDetails: Array.isArray(ids),
+    ids: new Set((Array.isArray(ids) ? ids : []).map((id) => String(id)))
+  };
+}
+
+function openTrendSnapshotDefectList(metric) {
+  if (!isTrendSnapshotMetric(metric) || !state.trendSnapshot) return;
+  const filter = createTrendSnapshotDefectFilter(state.trendSnapshot, metric);
+  if (!filter.hasDetails) {
+    showToast("该历史快照未保存缺陷明细", "error");
+    return;
+  }
+  state.trendSnapshotDefectFilter = filter;
+  state.trendDefectRange = null;
+  state.defectListMode = "snapshot";
+  state.ownerFilters = [];
+  updateOwnerFilterLabel();
+  document.getElementById("priorityFilter").value = "all";
+  document.getElementById("statusFilter").value = "all";
+  document.getElementById("openedAgeFilter").value = "all";
+  document.getElementById("defectSort").value = "priorityHigh";
+  closeTrendSnapshotDrawer();
+  switchView("defects", { updateRoute: false });
+  renderDefects();
+  logGuestOperation("查看每日快照明细", `${filter.date} · ${filter.label}`);
+}
+
+function moveTrendSnapshot(offset) {
+  const dates = state.trendSnapshot?.availableDates || [];
+  const current = state.trendSnapshotDate;
+  const currentIndex = dates.indexOf(current);
+  const nextIndex = currentIndex >= 0
+    ? currentIndex + offset
+    : offset < 0 ? dates.filter((date) => date < current).length - 1 : dates.findIndex((date) => date > current);
+  if (nextIndex < 0 || nextIndex >= dates.length) return;
+  loadTrendSnapshot(dates[nextIndex]).catch((error) => showToast(error.message || "每日快照加载失败", "error"));
+}
+
+function openTrendSnapshotDrawer() {
+  const drawer = document.getElementById("trendSnapshotDrawer");
+  if (!drawer) return;
+  drawer.classList.remove("hidden");
+  drawer.setAttribute("aria-hidden", "false");
+  document.body.classList.add("trend-snapshot-open");
+  closeTrendSnapshotCalendar();
+  const date = state.trendSnapshotDate || getLocalDateKey();
+  loadTrendSnapshot(date, { quiet: true }).catch((error) => {
+    showToast(error.message || "每日快照加载失败", "error");
+  });
+  window.setTimeout(() => document.getElementById("closeTrendSnapshot")?.focus(), 0);
+}
+
+function closeTrendSnapshotDrawer() {
+  const drawer = document.getElementById("trendSnapshotDrawer");
+  if (!drawer || drawer.classList.contains("hidden")) return;
+  drawer.classList.add("hidden");
+  drawer.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("trend-snapshot-open");
+  closeTrendSnapshotCalendar();
+  document.getElementById("openTrendSnapshot")?.focus();
+}
+
+function toggleTrendSnapshotCalendar() {
+  const calendar = document.getElementById("trendSnapshotCalendar");
+  const trigger = document.getElementById("trendSnapshotDateTrigger");
+  if (!calendar || !trigger) return;
+  const open = calendar.classList.contains("hidden");
+  calendar.classList.toggle("hidden", !open);
+  trigger.setAttribute("aria-expanded", String(open));
+  if (open) renderTrendSnapshotCalendar();
+}
+
+function closeTrendSnapshotCalendar() {
+  const calendar = document.getElementById("trendSnapshotCalendar");
+  const trigger = document.getElementById("trendSnapshotDateTrigger");
+  if (!calendar || calendar.classList.contains("hidden")) return false;
+  calendar.classList.add("hidden");
+  trigger?.setAttribute("aria-expanded", "false");
+  return true;
+}
+
+function renderTrendSnapshotCalendar() {
+  const container = document.getElementById("trendCalendarDays");
+  const monthLabel = document.getElementById("trendCalendarMonth");
+  if (!container || !monthLabel) return;
+  const availableDates = new Set(state.trendSnapshot?.availableDates || []);
+  const selectedDate = state.trendSnapshotDate;
+  const month = /^\d{4}-\d{2}$/.test(state.trendSnapshotCalendarMonth)
+    ? state.trendSnapshotCalendarMonth
+    : (selectedDate || getLocalDateKey()).slice(0, 7);
+  const [year, monthNumber] = month.split("-").map(Number);
+  monthLabel.textContent = `${year}年${monthNumber}月`;
+  const firstWeekday = (new Date(year, monthNumber - 1, 1).getDay() + 6) % 7;
+  const dayCount = new Date(year, monthNumber, 0).getDate();
+  const cells = Array.from({ length: firstWeekday }, () => '<span class="trend-calendar-blank"></span>');
+  for (let day = 1; day <= dayCount; day += 1) {
+    const date = `${month}-${String(day).padStart(2, "0")}`;
+    const available = availableDates.has(date);
+    const selected = date === selectedDate;
+    cells.push(`<button type="button" data-trend-snapshot-date="${date}" class="${selected ? "selected" : ""}" ${available ? "" : "disabled"} aria-label="${date}${available ? "" : "，无快照"}">${day}</button>`);
+  }
+  container.innerHTML = cells.join("");
+  container.querySelectorAll("[data-trend-snapshot-date]").forEach((button) => {
+    button.addEventListener("click", () => {
+      closeTrendSnapshotCalendar();
+      loadTrendSnapshot(button.dataset.trendSnapshotDate).catch((error) => {
+        showToast(error.message || "每日快照加载失败", "error");
+      });
+    });
+  });
+  updateTrendCalendarNavigation();
+}
+
+function moveTrendCalendarMonth(offset) {
+  const month = state.trendSnapshotCalendarMonth || (state.trendSnapshotDate || getLocalDateKey()).slice(0, 7);
+  const [year, monthNumber] = month.split("-").map(Number);
+  const next = new Date(year, monthNumber - 1 + offset, 1);
+  state.trendSnapshotCalendarMonth = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`;
+  renderTrendSnapshotCalendar();
+}
+
+function updateTrendCalendarNavigation() {
+  const dates = state.trendSnapshot?.availableDates || [];
+  const currentMonth = state.trendSnapshotCalendarMonth;
+  const firstMonth = dates[0]?.slice(0, 7) || currentMonth;
+  const lastMonth = dates.at(-1)?.slice(0, 7) || currentMonth;
+  const previous = document.getElementById("trendCalendarPrev");
+  const next = document.getElementById("trendCalendarNext");
+  if (previous) previous.disabled = !currentMonth || currentMonth <= firstMonth;
+  if (next) next.disabled = !currentMonth || currentMonth >= lastMonth;
+}
+
+function updateTrendSnapshotNavigation() {
+  const dates = state.trendSnapshot?.availableDates || [];
+  const currentIndex = dates.indexOf(state.trendSnapshotDate);
+  const previousAvailable = currentIndex > 0 || (currentIndex < 0 && dates.some((date) => date < state.trendSnapshotDate));
+  const nextAvailable = currentIndex >= 0
+    ? currentIndex < dates.length - 1
+    : dates.some((date) => date > state.trendSnapshotDate);
+  const previous = document.getElementById("trendSnapshotPrev");
+  const next = document.getElementById("trendSnapshotNext");
+  if (previous) previous.disabled = !previousAvailable;
+  if (next) next.disabled = !nextAvailable;
+}
+
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatSnapshotDate(value) {
+  const parts = String(value || "").split("-");
+  return parts.length === 3 ? `${Number(parts[1])}月${Number(parts[2])}日` : value;
+}
+
+function renderTrendTabs() {
+  document.querySelectorAll("[data-trend-granularity]").forEach((button) => {
+    const active = button.dataset.trendGranularity === state.trendGranularity;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  const hints = { day: "最近 14 天", week: "最近 12 周", month: "最近 12 个月" };
+  const hint = document.getElementById("trendRangeHint");
+  if (hint) hint.textContent = hints[state.trendGranularity] || hints.day;
+}
+
+function renderTrendsLoading() {
+  const summary = document.getElementById("trendSummary");
+  const charts = document.getElementById("trendCharts");
+  if (summary) summary.innerHTML = Array.from({ length: 4 }).map(() => `
+    <div class="trend-summary-card loading-card"><span class="loading-line short"></span><strong><span class="loading-number"></span></strong><span class="loading-line"></span></div>
+  `).join("");
+  if (charts) charts.innerHTML = Array.from({ length: 3 }).map(() => `
+    <section class="panel trend-chart-card loading-card"><span class="loading-line short"></span><span class="trend-chart-loading"></span></section>
+  `).join("");
+}
+
+function renderTrendError(message) {
+  const summary = document.getElementById("trendSummary");
+  const charts = document.getElementById("trendCharts");
+  if (summary) summary.innerHTML = "";
+  if (charts) charts.innerHTML = `<div class="panel trend-empty"><strong>趋势暂时无法加载</strong><span>${escapeHtml(message)}</span></div>`;
+}
+
+function renderTrends() {
+  const points = state.trends?.points || [];
+  const latest = points.at(-1) || {};
+  const previous = points.at(-2) || {};
+  const summaryMetrics = [
+    ["新增缺陷", "todayAdded", "incoming"],
+    ["已解决", "todayResolved", "done"],
+    ["未完成", "openTotal", "total"],
+    ["P1/P2 未完成", "urgentOpen", "urgent"]
+  ];
+  document.getElementById("trendSummary").innerHTML = summaryMetrics.map(([label, key, tone]) => {
+    const value = latest[key];
+    const comparison = getTrendComparison(value, previous[key]);
+    return `
+      <button class="trend-summary-card ${tone}" type="button" data-trend-defect-metric="${key}" aria-label="查看${escapeHtml(label)}缺陷详情">
+        <span class="trend-summary-heading">
+          <span class="trend-summary-icon" aria-hidden="true">${trendSummaryIcon(key)}</span>
+          <span>${label}</span>
+        </span>
+        <strong>${formatTrendValue(value)}</strong>
+        <small class="${comparison.tone}">${comparison.text}</small>
+      </button>
+    `;
+  }).join("");
+  document.querySelectorAll("[data-trend-defect-metric]").forEach((button) => {
+    button.addEventListener("click", () => openTrendDefectList(button.dataset.trendDefectMetric, latest));
+  });
+
+  const charts = [
+    {
+      title: "处理趋势",
+      description: "新增、解决与关闭的数量变化",
+      series: [
+        ["todayAdded", "新增", "#2563eb"],
+        ["todayResolved", "解决", "#009b72"],
+        ["todayClosed", "关闭", "#7c3aed"]
+      ]
+    },
+    {
+      title: "待处理趋势",
+      description: "各周期末的未完成缺陷存量",
+      snapshot: true,
+      series: [
+        ["openTotal", "未完成", "#4f46e5"],
+        ["urgentOpen", "P1/P2", "#e11d48"],
+        ["normalOpen", "非 P1/P2", "#d97706"]
+      ]
+    },
+    {
+      title: "质量状态趋势",
+      description: "待验证与异常数据的存量变化",
+      snapshot: true,
+      series: [
+        ["resolvedPendingVerify", "待验证", "#0891b2"],
+        ["abnormalOpen", "异常", "#dc2626"]
+      ]
+    }
+  ];
+  if (hasOwnerScope()) {
+    charts.push({
+      title: "流转趋势",
+      description: "当前人员转入与转出的数量变化",
+      series: [
+        ["todayReturned", "转入", "#0284c7"],
+        ["todayTransferred", "转出", "#9333ea"]
+      ]
+    });
+  }
+  disposeTrendCharts();
+  document.getElementById("trendCharts").innerHTML = charts.map((chart, index) => renderTrendChartShell(chart, points, index)).join("");
+  initTrendCharts(charts, points);
+}
+
+function getTrendComparison(current, previous) {
+  const periodText = {
+    day: "昨日",
+    week: "上周",
+    month: "上一个月"
+  }[state.trendGranularity] || "上一周期";
+  if (current === null || current === undefined) return { text: "等待快照", tone: "muted" };
+  if (previous === null || previous === undefined) return { text: `暂无${periodText}对比`, tone: "muted" };
+  const delta = Number(current) - Number(previous);
+  if (!delta) return { text: `与${periodText}持平`, tone: "steady" };
+  return { text: `较${periodText} ${delta > 0 ? "+" : ""}${delta}`, tone: delta > 0 ? "up" : "down" };
+}
+
+function trendSummaryIcon(key) {
+  const labels = {
+    todayAdded: "今日新增",
+    todayResolved: "今日解决",
+    openTotal: "未完成总数",
+    urgentOpen: "P1/P2 未完成"
+  };
+  return metricIcon(labels[key] || "");
+}
+
+function formatTrendValue(value) {
+  return value === null || value === undefined ? "--" : String(value);
+}
+
+function renderTrendChartShell(chart, points, index) {
+  const hasSnapshotData = chart.series.some(([key]) => points.some((point) => point[key] !== null && point[key] !== undefined));
+  const content = hasSnapshotData
+    ? `<div class="trend-chart" id="trendChart${index}" role="img" aria-label="${escapeHtml(chart.title)}"></div>`
+    : `<div class="trend-snapshot-empty"><strong>历史快照正在积累</strong><span>从今天起，每次同步后都会保留当天的期末数据。</span></div>`;
+  return `
+    <section class="panel trend-chart-card">
+      <div class="trend-chart-head">
+        <div><h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(chart.description)}</p></div>
+      </div>
+      ${content}
+    </section>
+  `;
+}
+
+function initTrendCharts(charts, points) {
+  if (!window.echarts) {
+    renderTrendError("ECharts 资源加载失败，请刷新页面重试");
+    return;
+  }
+  const mobile = window.matchMedia("(max-width: 760px)").matches;
+  charts.forEach((chart, index) => {
+    const element = document.getElementById(`trendChart${index}`);
+    if (!element) return;
+    const instance = window.echarts.init(element, null, { renderer: "canvas" });
+    instance.setOption(createTrendChartOption(chart, points, mobile), { notMerge: true });
+    state.trendChartInstances.push(instance);
+  });
+}
+
+function createTrendChartOption(chart, points, mobile) {
+  const zoomStart = mobile && points.length > 8 ? Math.round((points.length - 8) / points.length * 100) : 0;
+  return {
+    animation: true,
+    animationDuration: 900,
+    animationDurationUpdate: 520,
+    animationEasing: "cubicOut",
+    animationEasingUpdate: "cubicInOut",
+    color: chart.series.map(([, , color]) => color),
+    aria: { enabled: true, description: `${chart.title}，${chart.description}` },
+    grid: { left: mobile ? 36 : 42, right: 16, top: 48, bottom: points.length > 7 ? 50 : 30, containLabel: false },
+    legend: {
+      top: 4,
+      left: 0,
+      itemWidth: 9,
+      itemHeight: 9,
+      itemGap: mobile ? 10 : 16,
+      icon: "circle",
+      textStyle: { color: "#52637a", fontSize: mobile ? 11 : 12 },
+      selectedMode: true
+    },
+    tooltip: {
+      trigger: "axis",
+      confine: true,
+      enterable: false,
+      backgroundColor: "rgba(255,255,255,0.96)",
+      borderColor: "#dbe4ef",
+      borderWidth: 1,
+      padding: [9, 11],
+      textStyle: { color: "#1e293b", fontSize: 12 },
+      extraCssText: "box-shadow:0 10px 28px rgba(15,23,42,.12);border-radius:6px;",
+      axisPointer: { type: "line", lineStyle: { color: "#94a3b8", type: "dashed" } },
+      valueFormatter: (value) => value === null || value === undefined ? "--" : `${value} 个`
+    },
+    toolbox: mobile ? undefined : {
+      right: 0,
+      top: 0,
+      itemSize: 14,
+      iconStyle: { borderColor: "#718096" },
+      emphasis: { iconStyle: { borderColor: "#2563eb" } },
+      feature: { dataZoom: { yAxisIndex: "none", title: { zoom: "框选缩放", back: "还原缩放" } }, restore: { title: "还原" } }
+    },
+    xAxis: {
+      type: "category",
+      boundaryGap: false,
+      data: points.map((point) => point.label),
+      axisLine: { lineStyle: { color: "#dbe4ef" } },
+      axisTick: { show: false },
+      axisLabel: { color: "#8492a6", fontSize: mobile ? 10 : 11, hideOverlap: true, margin: 12 }
+    },
+    yAxis: {
+      type: "value",
+      min: 0,
+      minInterval: 1,
+      splitNumber: 4,
+      axisLabel: { color: "#8492a6", fontSize: 10 },
+      splitLine: { lineStyle: { color: "#e7edf5" } }
+    },
+    dataZoom: points.length > 7 ? [
+      { type: "inside", start: zoomStart, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: true, preventDefaultMouseMove: true },
+      {
+        type: "slider",
+        start: zoomStart,
+        end: 100,
+        height: 14,
+        bottom: 5,
+        borderColor: "transparent",
+        backgroundColor: "#eef2f7",
+        fillerColor: "rgba(37,99,235,.14)",
+        handleSize: mobile ? "90%" : "75%",
+        handleStyle: { color: "#fff", borderColor: "#7aa7f8", borderWidth: 1 },
+        moveHandleStyle: { color: "#7aa7f8" },
+        dataBackground: { lineStyle: { color: "#b7c7dc" }, areaStyle: { color: "#dce7f5" } },
+        selectedDataBackground: { lineStyle: { color: "#5b8def" }, areaStyle: { color: "#a9c5f7" } },
+        showDetail: false,
+        brushSelect: false
+      }
+    ] : [],
+    series: chart.series.map(([key, label, color], seriesIndex) => ({
+      name: label,
+      type: "line",
+      data: points.map((point) => point[key] === null || point[key] === undefined ? null : Number(point[key])),
+      smooth: 0.28,
+      connectNulls: false,
+      showSymbol: true,
+      symbol: ["circle", "diamond", "roundRect"][seriesIndex % 3],
+      symbolSize: mobile ? 6 : 7,
+      lineStyle: { width: 2.5, color, cap: "round" },
+      itemStyle: { color, borderColor: "#fff", borderWidth: 2 },
+      emphasis: { focus: "series", scale: 1.6, lineStyle: { width: 3.5 } },
+      areaStyle: seriesIndex === 0 ? {
+        opacity: 0.07,
+        color: new window.echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color },
+          { offset: 1, color: "rgba(255,255,255,0)" }
+        ])
+      } : undefined,
+      endLabel: points.length <= 8 ? { show: true, formatter: "{a}", color, fontSize: 10, distance: 5 } : undefined,
+      animationDelay: (dataIndex) => dataIndex * 28
+    }))
+  };
+}
+
+function disposeTrendCharts() {
+  (state.trendChartInstances || []).forEach((instance) => {
+    if (instance && !instance.isDisposed()) instance.dispose();
+  });
+  state.trendChartInstances = [];
+}
+
+function resizeTrendCharts() {
+  (state.trendChartInstances || []).forEach((instance) => {
+    if (instance && !instance.isDisposed()) instance.resize({ animation: { duration: 240 } });
+  });
+}
+
 function renderOverviewLoading() {
   const metrics = hasOwnerScope()
     ? ["今日新增", "今日解决", "今日关闭", "今日转出", "今日转入", "未完成总数", "P1/P2 未完成", "非 P1/P2 未完成", "已解决待验证", "异常数据"]
@@ -1483,7 +2165,6 @@ function renderOverviewLoading() {
     document.getElementById("mobileOwnerComparison").innerHTML = `
       <div class="mobile-owner-comparison-head">
         <strong>负责人统计</strong>
-        <span>数据加载中</span>
       </div>
       <div class="mobile-owner-comparison-loading">
         ${Array.from({ length: 4 }).map(() => '<span class="loading-line"></span>').join("")}
@@ -1512,7 +2193,6 @@ function renderMobileOwnerComparison(owners) {
   container.innerHTML = `
     <div class="mobile-owner-comparison-head">
       <strong>负责人统计</strong>
-      <span>${rows.length} 人</span>
     </div>
     <div class="mobile-owner-metric-tabs" role="tablist" aria-label="负责人统计口径">
       ${options.map((option) => `<button class="${option.key === selected.key ? "active" : ""}" type="button" role="tab" aria-selected="${option.key === selected.key}" data-mobile-owner-metric="${option.key}">${option.label}</button>`).join("")}
@@ -1534,6 +2214,26 @@ function renderMobileOwnerComparison(owners) {
     button.addEventListener("click", () => {
       state.mobileOwnerMetric = button.dataset.mobileOwnerMetric;
       renderOverview();
+    });
+  });
+  scrollActiveMobileOwnerMetricTab(container);
+}
+
+function scrollActiveMobileOwnerMetricTab(container) {
+  window.requestAnimationFrame(() => {
+    const tabs = container?.querySelector(".mobile-owner-metric-tabs");
+    const activeTab = tabs?.querySelector("[data-mobile-owner-metric].active");
+    if (!tabs || !activeTab) return;
+    const tabsRect = tabs.getBoundingClientRect();
+    const activeRect = activeTab.getBoundingClientRect();
+    const isFullyVisible = activeRect.left >= tabsRect.left - 1
+      && activeRect.right <= tabsRect.right + 1;
+    if (isFullyVisible) return;
+    const targetLeft = tabs.scrollLeft + activeRect.left - tabsRect.left
+      - (tabs.clientWidth - activeRect.width) / 2;
+    tabs.scrollTo({
+      left: Math.max(0, targetLeft),
+      behavior: "smooth"
     });
   });
 }
@@ -1895,14 +2595,19 @@ function renderDefects(options = {}) {
   const sort = document.getElementById("defectSort").value;
   let defects = sortDefectsForDisplay(state.defects);
 
-  defects = defects.filter((defect) => isConfiguredPersonDefect(defect, state.defectListMode));
+  if (state.defectListMode === "snapshot") {
+    const snapshotIds = state.trendSnapshotDefectFilter?.ids || new Set();
+    defects = defects.filter((defect) => snapshotIds.has(String(defect.id)));
+  } else {
+    defects = defects.filter((defect) => isConfiguredPersonDefect(defect, state.defectListMode));
+  }
   if (priority === "urgent") defects = defects.filter((defect) => ["1", "2"].includes(String(defect.priority)));
   if (priority === "normal") defects = defects.filter((defect) => !["1", "2"].includes(String(defect.priority)));
   if (!hasOwnerScope() && state.ownerFilters.length) defects = defects.filter((defect) => matchesOwnerFilters(defect, state.defectListMode));
   defects = applyDefectListMode(defects, state.defectListMode);
   defects = applyStatusFilter(defects, status);
   defects = applyOpenedAgeFilter(defects, openedAge);
-  if (!["todayAdded", "resolvedPendingVerify", "ownerPendingTest", "ownerTodayAdded", "ownerTodayTransferred", "ownerTodayReturned"].includes(state.defectListMode)) {
+  if (!["todayAdded", "resolvedPendingVerify", "ownerPendingTest", "ownerTodayAdded", "ownerTodayTransferred", "ownerTodayReturned", "trendAdded", "trendResolved", "snapshot"].includes(state.defectListMode)) {
     defects = defects.filter(isCurrentTerminalDefect);
   }
   defects = sortDefectsByMode(defects, sort, state.defectListMode);
@@ -1919,7 +2624,8 @@ function renderDefects(options = {}) {
   const showTransferToColumn = state.defectListMode === "ownerTodayTransferred";
   const showTransferFromColumn = state.defectListMode === "ownerTodayReturned";
   const showClosedByColumn = state.defectListMode === "todayClosed";
-  const showCreatorColumn = ["todayAdded", "ownerTodayAdded"].includes(state.defectListMode);
+  const showCreatorColumn = ["todayAdded", "ownerTodayAdded", "trendAdded"].includes(state.defectListMode);
+  const showCreatedDateColumn = state.defectListMode !== "todayResolved";
   const headers = ["ID", "标题", "优先级", "状态"];
   if (showOwnerColumn) headers.push("负责人");
   if (showTransferToColumn) headers.push("转入人");
@@ -1928,7 +2634,7 @@ function renderDefects(options = {}) {
   if (showClosedByColumn) headers.push("由谁关闭");
   if (terminalDateColumn) headers.push(terminalDateColumn);
   if (showCreatorColumn) headers.push("创建人");
-  headers.push("创建时间");
+  if (showCreatedDateColumn) headers.push("创建时间");
 
   document.getElementById("defectsTable").innerHTML = renderTable(
     headers,
@@ -1946,7 +2652,7 @@ function renderDefects(options = {}) {
       if (showClosedByColumn) row.push(titledText(formatPersonDisplayName(defect.closedBy)));
       if (terminalDateColumn) row.push(formatTime(getModeDate(defect, state.defectListMode) || getTerminalDate(defect)));
       if (showCreatorColumn) row.push(titledText(formatPersonDisplayName(defect.openedBy)));
-      row.push(formatTime(defect.openedDate));
+      if (showCreatedDateColumn) row.push(formatTime(defect.openedDate));
       return row;
     }),
     "defects-data-table"
@@ -1975,12 +2681,18 @@ function renderMobileFilterSummary() {
 }
 
 function renderDefectsFromToolbar(options = {}) {
-  if (options.resetMode) state.defectListMode = "all";
+  if (options.resetMode) {
+    state.defectListMode = "all";
+    state.trendDefectRange = null;
+    state.trendSnapshotDefectFilter = null;
+  }
   renderDefects();
 }
 
 function resetDefectFiltersToDefault() {
   state.defectListMode = "all";
+  state.trendDefectRange = null;
+  state.trendSnapshotDefectFilter = null;
   state.ownerFilters = [];
   document.getElementById("priorityFilter").value = "all";
   document.getElementById("statusFilter").value = "active";
@@ -2014,6 +2726,10 @@ function renderDefectConditionBar() {
 }
 
 function getDefectConditionText() {
+  if (state.defectListMode === "snapshot" && state.trendSnapshotDefectFilter) {
+    const filter = state.trendSnapshotDefectFilter;
+    return `当前条件：每日快照 / ${formatSnapshotDate(filter.date)} / ${filter.label}`;
+  }
   const modeLabels = {
     todayAdded: "今日新增",
     todayResolved: "今日解决",
@@ -2030,10 +2746,13 @@ function getDefectConditionText() {
     ownerTodayAdded: "负责人统计 / 今日新增",
     ownerTodayTransferred: "负责人统计 / 今日转出",
     ownerTodayReturned: "负责人统计 / 今日转入",
-    ownerTodayResolved: "负责人统计 / 今日解决"
+    ownerTodayResolved: "负责人统计 / 今日解决",
+    trendAdded: "趋势 / 新增缺陷",
+    trendResolved: "趋势 / 已解决缺陷"
   };
   const ownerText = !hasOwnerScope() && state.ownerFilters.length ? ` · ${state.ownerFilters.join("、")}` : "";
-  return `当前条件：${modeLabels[state.defectListMode] || "自定义条件"}${ownerText}`;
+  const rangeText = state.trendDefectRange?.label ? ` · ${state.trendDefectRange.label}` : "";
+  return `当前条件：${modeLabels[state.defectListMode] || "自定义条件"}${rangeText}${ownerText}`;
 }
 
 function shouldShowResolverColumn(defects, mode) {
@@ -2151,10 +2870,13 @@ function getTerminalDateColumn(defects) {
 function getModeDateColumn(mode, defects) {
   if (!defects.length) return "";
   const map = {
+    todayResolved: "解决时间",
     todayClosed: "关闭时间",
     resolvedPendingVerify: "解决时间",
     ownerTodayTransferred: "转出时间",
-    ownerTodayReturned: "转入时间"
+    ownerTodayReturned: "转入时间",
+    trendAdded: "新增时间",
+    trendResolved: "解决时间"
   };
   return map[mode] || "";
 }
@@ -2168,7 +2890,9 @@ function getModeDate(defect, mode) {
     ownerTodayAdded: () => defect.openedDate,
     ownerTodayTransferred: () => getTransferAt(defect),
     ownerTodayReturned: () => defect.assignedAt,
-    ownerTodayResolved: () => getDeveloperResolvedAt(defect) || getTerminalDate(defect)
+    ownerTodayResolved: () => getDeveloperResolvedAt(defect) || getTerminalDate(defect),
+    trendAdded: () => getTrendAddedAt(defect),
+    trendResolved: () => getDeveloperResolvedAt(defect) || getTerminalDate(defect)
   };
   return map[mode]?.() || "";
 }
@@ -2189,13 +2913,17 @@ function isCurrentTerminalDefect(defect) {
 function applyDefectRouteParams() {
   if (getViewFromRoute() !== "defects") return;
   const { params } = parseRoute();
-  const mode = getValidParam(params.get("mode"), ["all", "todayAdded", "todayResolved", "todayClosed", "open", "urgent", "normal", "abnormal", "resolvedPendingVerify", "ownerOpen", "ownerUrgent", "ownerNormal", "ownerPendingTest", "ownerTodayAdded", "ownerTodayTransferred", "ownerTodayReturned", "ownerTodayResolved"], "all");
+  const mode = getValidParam(params.get("mode"), ["all", "todayAdded", "todayResolved", "todayClosed", "open", "urgent", "normal", "abnormal", "resolvedPendingVerify", "ownerOpen", "ownerUrgent", "ownerNormal", "ownerPendingTest", "ownerTodayAdded", "ownerTodayTransferred", "ownerTodayReturned", "ownerTodayResolved", "trendAdded", "trendResolved", "snapshot"], "all");
   const priority = getValidParam(params.get("priority"), ["all", "urgent", "normal"], "all");
   const status = getValidParam(params.get("status"), ["all", "active", "resolved", "closed"], "active");
   const openedAge = getValidParam(params.get("openedAge"), ["all", "today", "yesterday", "beforeYesterday", "overdue"], "all");
   const sort = getValidParam(params.get("sort"), ["priorityHigh", "priorityLow"], "priorityHigh");
 
   state.defectListMode = mode;
+  state.trendDefectRange = ["trendAdded", "trendResolved"].includes(mode)
+    ? normalizeTrendDefectRange(params.get("from"), params.get("to"), params.get("period"))
+    : null;
+  if (mode !== "snapshot") state.trendSnapshotDefectFilter = null;
   document.getElementById("priorityFilter").value = priority;
   document.getElementById("statusFilter").value = status;
   document.getElementById("openedAgeFilter").value = openedAge;
@@ -2219,6 +2947,15 @@ function buildDefectRoute() {
   params.set("openedAge", document.getElementById("openedAgeFilter").value || "all");
   params.set("sort", document.getElementById("defectSort").value || "priorityHigh");
   if (!hasOwnerScope() && state.ownerFilters.length) params.set("owners", state.ownerFilters.join(","));
+  if (state.trendDefectRange) {
+    params.set("from", state.trendDefectRange.from);
+    params.set("to", state.trendDefectRange.to);
+    params.set("period", state.trendDefectRange.label);
+  }
+  if (state.defectListMode === "snapshot" && state.trendSnapshotDefectFilter) {
+    params.set("snapshotDate", state.trendSnapshotDefectFilter.date);
+    params.set("snapshotMetric", state.trendSnapshotDefectFilter.metric);
+  }
   return `${getScopedViewRoute("defects")}?${params.toString()}`;
 }
 
@@ -2305,6 +3042,7 @@ function renderOwnerFilterOptions() {
   menu.querySelectorAll("input[type='checkbox']").forEach((input) => {
     input.addEventListener("change", () => {
       state.defectListMode = "all";
+      state.trendDefectRange = null;
       state.ownerFilters = [...menu.querySelectorAll("input[type='checkbox']:checked")].map((item) => item.value);
       updateOwnerFilterLabel();
       renderDefects();
@@ -2312,12 +3050,14 @@ function renderOwnerFilterOptions() {
   });
   document.getElementById("ownerSelectAll").addEventListener("click", () => {
     state.defectListMode = "all";
+    state.trendDefectRange = null;
     state.ownerFilters = owners;
     renderOwnerFilterOptions();
     renderDefects();
   });
   document.getElementById("ownerClear").addEventListener("click", () => {
     state.defectListMode = "all";
+    state.trendDefectRange = null;
     state.ownerFilters = [];
     renderOwnerFilterOptions();
     renderDefects();
@@ -2339,7 +3079,62 @@ function updateOwnerFilterLabel() {
   else trigger.textContent = `已选 ${state.ownerFilters.length} 人`;
 }
 
+function openTrendDefectList(metric, point) {
+  state.trendSnapshotDefectFilter = null;
+  const modeMap = {
+    todayAdded: "trendAdded",
+    todayResolved: "trendResolved",
+    openTotal: "open",
+    urgentOpen: "urgent"
+  };
+  const mode = modeMap[metric];
+  if (!mode) return;
+  if (!["trendAdded", "trendResolved"].includes(mode)) {
+    state.trendDefectRange = null;
+    openDefectList(mode);
+    return;
+  }
+
+  const from = point?.date || "";
+  const lastDate = point?.endDate || point?.date || "";
+  const to = addDaysToDateKey(lastDate, 1);
+  state.trendDefectRange = normalizeTrendDefectRange(from, to, getTrendPeriodLabel(point));
+  state.defectListMode = mode;
+  state.ownerFilters = [];
+  updateOwnerFilterLabel();
+  document.getElementById("priorityFilter").value = "all";
+  document.getElementById("statusFilter").value = "all";
+  document.getElementById("openedAgeFilter").value = "all";
+  switchView("defects", { updateRoute: false });
+  renderDefects();
+  logGuestOperation("查看趋势缺陷", `${defectModeText(mode)} · ${state.trendDefectRange?.label || ""}`);
+}
+
+function getTrendPeriodLabel(point) {
+  if (!point) return "";
+  if (state.trendGranularity === "day") return point.date;
+  if (state.trendGranularity === "week") return `${point.date} 至 ${point.endDate || point.date}`;
+  return `${String(point.date || "").slice(0, 7)} 月`;
+}
+
+function normalizeTrendDefectRange(from, to, label = "") {
+  const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+  if (!datePattern.test(String(from || "")) || !datePattern.test(String(to || ""))) return null;
+  if (String(from) >= String(to)) return null;
+  return { from: String(from), to: String(to), label: String(label || from) };
+}
+
+function addDaysToDateKey(value, days) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  date.setDate(date.getDate() + days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 function openDefectList(mode) {
+  state.trendDefectRange = null;
+  state.trendSnapshotDefectFilter = null;
   state.defectListMode = mode;
   state.ownerFilters = [];
   updateOwnerFilterLabel();
@@ -2361,6 +3156,8 @@ function openDefectList(mode) {
 }
 
 function openOwnerDefectList(mode, owner) {
+  state.trendDefectRange = null;
+  state.trendSnapshotDefectFilter = null;
   state.defectListMode = mode;
   state.ownerFilters = hasOwnerScope() ? [] : (owner ? [owner] : []);
   updateOwnerFilterLabel();
@@ -2395,7 +3192,10 @@ function defectModeText(mode) {
     ownerTodayAdded: "负责人今日新增",
     ownerTodayResolved: "负责人今日解决",
     ownerTodayTransferred: "负责人今日转出",
-    ownerTodayReturned: "负责人今日转入"
+    ownerTodayReturned: "负责人今日转入",
+    trendAdded: "趋势新增缺陷",
+    trendResolved: "趋势已解决缺陷",
+    snapshot: "每日快照明细"
   };
   return texts[mode] || mode || "-";
 }
@@ -2428,6 +3228,8 @@ function applyDefectListMode(defects, mode) {
   if (mode === "ownerTodayTransferred") return defects.filter(isTodayTransferredDefect);
   if (mode === "ownerTodayReturned") return defects.filter(isTodayReturnedDefect);
   if (mode === "ownerTodayResolved") return defects.filter((defect) => isFrontendResolvedDefect(defect) && isToday(getDeveloperResolvedAt(defect)));
+  if (mode === "trendAdded") return defects.filter(isTrendAddedDefect);
+  if (mode === "trendResolved") return defects.filter(isTrendResolvedDefect);
   return defects;
 }
 
@@ -2642,7 +3444,7 @@ function renderSyncLogs() {
             </tr>
           `).join("") : `
             <tr>
-              <td class="table-empty" colspan="6">暂无同步记录</td>
+              <td class="table-empty" colspan="6">暂无同步日志</td>
             </tr>
           `}
         </tbody>
@@ -3462,7 +4264,9 @@ function isTimeDescListMode(mode) {
     "ownerTodayAdded",
     "ownerTodayTransferred",
     "ownerTodayReturned",
-    "ownerTodayResolved"
+    "ownerTodayResolved",
+    "trendAdded",
+    "trendResolved"
   ].includes(mode);
 }
 
@@ -3633,6 +4437,46 @@ function isToday(value) {
   if (Number.isNaN(date.getTime())) return false;
   const now = new Date();
   return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+}
+
+function isInTrendDefectRange(value) {
+  if (!value || !state.trendDefectRange) return false;
+  const date = new Date(value);
+  const from = new Date(`${state.trendDefectRange.from}T00:00:00`);
+  const to = new Date(`${state.trendDefectRange.to}T00:00:00`);
+  return !Number.isNaN(date.getTime()) && date >= from && date < to;
+}
+
+function isTrendTransferDefect(defect) {
+  return Boolean(getTransferFrom(defect))
+    && Boolean(getTransferTo(defect))
+    && !namesMatch(getTransferFrom(defect), getTransferTo(defect))
+    && isInTrendDefectRange(getTransferAt(defect))
+    && !isResolvedByTransferAction(defect);
+}
+
+function isTrendIncomingTransferDefect(defect) {
+  return isTrendTransferDefect(defect) && isFrontendOwner(getTransferTo(defect));
+}
+
+function isTrendAddedDefect(defect) {
+  if (hasOwnerScope()) {
+    return isInTrendDefectRange(defect.openedDate)
+      && namesMatch(getInitialAssignedTo(defect), getActiveOwnerScope());
+  }
+  return isInTrendDefectRange(defect.openedDate) || isTrendIncomingTransferDefect(defect);
+}
+
+function getTrendAddedAt(defect) {
+  if (isInTrendDefectRange(defect.openedDate)) return defect.openedDate;
+  if (isTrendIncomingTransferDefect(defect)) return getTransferAt(defect);
+  return "";
+}
+
+function isTrendResolvedDefect(defect) {
+  if (!isFrontendResolvedDefect(defect) || !isInTrendDefectRange(getDeveloperResolvedAt(defect))) return false;
+  if (!hasOwnerScope()) return true;
+  return getDeveloperOwnerFields(defect).some((owner) => namesMatch(owner, getActiveOwnerScope()));
 }
 
 function isNewPendingDefect(defect) {
