@@ -30,6 +30,8 @@ const ZENTAO_BUGS_PAGE_SIZE = 2000;
 const ZENTAO_RECENT_EDITED_LIMIT = 80;
 const ZENTAO_DETAIL_CONCURRENCY = 16;
 const MIN_DEFECT_CACHE_TTL_MS = 60 * 1000;
+const ACCESS_ONLINE_TIMEOUT_MS = 10 * 1000;
+const ACCESS_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 const ADMIN_COOKIE_NAME = "zend_admin";
 const GUEST_COOKIE_PREFIX = "zend_guest_";
 const OVERVIEW_DEFECT_DIFFICULTIES = new Set(["simple", "medium", "hard"]);
@@ -164,6 +166,7 @@ store.requirementOverviewDefects = normalizeOverviewDefectIds(store.requirementO
 store.overviewDefectDifficulties = normalizeOverviewDefectDifficulties(store.overviewDefectDifficulties);
 store.guestPasswords = normalizeGuestPasswords(store.guestPasswords);
 store.accessLogs = normalizeAccessLogs(store.accessLogs);
+closeStaleAccessLogs();
 store.operationLogs = normalizeOperationLogs(store.operationLogs);
 await saveConfig();
 await saveStore();
@@ -389,7 +392,7 @@ async function route(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/access-logs") {
-    sendJson(res, 200, { logs: getRecentAccessLogs() });
+    sendJson(res, 200, { logs: await getRecentAccessLogs() });
     return;
   }
 
@@ -1769,8 +1772,9 @@ function getRecentSyncLogs() {
     .slice(0, 100);
 }
 
-function getRecentAccessLogs() {
+async function getRecentAccessLogs() {
   store.accessLogs = normalizeAccessLogs(store.accessLogs);
+  if (closeStaleAccessLogs()) await saveStore();
   const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
   return store.accessLogs
     .filter((log) => {
@@ -1871,6 +1875,10 @@ async function recordGuestVisitDuration(req, body = {}) {
   store.accessLogs = normalizeAccessLogs(store.accessLogs);
 
   let log = sessionId ? store.accessLogs.find((item) => item.sessionId === sessionId) : null;
+  if (log?.endedAt) {
+    const endedAt = new Date(log.endedAt).getTime();
+    if (!Number.isFinite(endedAt) || Date.now() - endedAt > ACCESS_ONLINE_TIMEOUT_MS) log = null;
+  }
   if (!log) log = findReusableAccessLog({ ip, owner, path: rawPath, sessionId });
 
   if (!log) {
@@ -1919,7 +1927,7 @@ function findReusableAccessLog({ ip, owner, path, sessionId }) {
       if (!areSameGuestVisitPath(item.path, path)) return false;
       const touchedAt = new Date(item.endedAt || item.lastSeenAt || item.accessedAt).getTime();
       if (!Number.isFinite(touchedAt)) return false;
-      const maxGap = item.endedAt ? 10 * 1000 : 10 * 60 * 1000;
+      const maxGap = item.endedAt ? ACCESS_ONLINE_TIMEOUT_MS : ACCESS_SESSION_TIMEOUT_MS;
       return now - touchedAt <= maxGap;
     });
 }
@@ -1954,10 +1962,24 @@ function closeOtherOpenAccessLogs({ ip, owner, path, keepId, closedAt }) {
 
 function getAccessLogSessionStatus(log) {
   if (log.endedAt) return "ended";
-  if (log.awayAt) return "away";
   const lastSeenAt = new Date(log.lastSeenAt || log.accessedAt).getTime();
   if (!Number.isFinite(lastSeenAt)) return "away";
-  return Date.now() - lastSeenAt <= 10 * 1000 ? "online" : "away";
+  if (Date.now() - lastSeenAt > ACCESS_SESSION_TIMEOUT_MS) return "ended";
+  if (log.awayAt) return "away";
+  return Date.now() - lastSeenAt <= ACCESS_ONLINE_TIMEOUT_MS ? "online" : "away";
+}
+
+function closeStaleAccessLogs(now = Date.now()) {
+  let changed = false;
+  store.accessLogs.forEach((log) => {
+    if (log.type !== "page" || log.endedAt) return;
+    const lastSeenAt = new Date(log.lastSeenAt || log.accessedAt).getTime();
+    if (!Number.isFinite(lastSeenAt) || now - lastSeenAt <= ACCESS_SESSION_TIMEOUT_MS) return;
+    log.endedAt = log.awayAt || log.lastSeenAt || new Date(now).toISOString();
+    log.awayAt = "";
+    changed = true;
+  });
+  return changed;
 }
 
 function shouldRecordGuestAccess(req, url, details) {
