@@ -1104,9 +1104,7 @@ function buildP1P2Message(defects, stats = {}) {
       `### 今日 P1/P2 缺陷风险提醒`,
       ``,
       `#### 📌 关键数据`,
-      `> 今日新增缺陷：**${todayAdded}** 个<br>`,
-      `> 今日已修复缺陷：**${todayResolved}** 个<br>`,
-      `> 当前剩余 P1/P2 未完成：**0** 个`,
+      `> 今日新增缺陷：**${todayAdded}** 个<br>今日已修复缺陷：**${todayResolved}** 个<br>当前剩余 P1/P2 未完成：**0** 个`,
       ``,
       formatMessageFooter()
     ].join("\n");
@@ -1115,10 +1113,7 @@ function buildP1P2Message(defects, stats = {}) {
     `### 今日 P1/P2 缺陷风险提醒`,
     ``,
     `#### 📌 关键数据`,
-    `> 今日新增缺陷：**${todayAdded}** 个<br>`,
-    `> 今日已修复缺陷：**${todayResolved}** 个<br>`,
-    `> 当前剩余 P1/P2 未完成：**${sortedDefects.length}** 个<br>`,
-    `> 温馨提示：相关处理人可按需查看`,
+    `> 今日新增缺陷：**${todayAdded}** 个<br>今日已修复缺陷：**${todayResolved}** 个<br>当前剩余 P1/P2 未完成：**${sortedDefects.length}** 个<br>温馨提示：相关处理人可按需查看`,
     ``,
     `#### 📋 待处理明细`,
     ``,
