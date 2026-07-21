@@ -5197,13 +5197,13 @@ tbody tr:hover {
     display: none;
   }
 
-  body.guest-mode.guest-owner-mode #overviewView .metrics {
+  body.guest-owner-mode #overviewView .metrics {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 6px;
   }
 
-  body.guest-mode.guest-owner-mode #overviewView .metric {
+  body.guest-owner-mode #overviewView .metric {
     width: auto;
     min-width: 0;
     max-width: none;
@@ -5213,30 +5213,30 @@ tbody tr:hover {
     flex: none;
   }
 
-  body.guest-mode.guest-owner-mode #overviewView .metric-heading {
+  body.guest-owner-mode #overviewView .metric-heading {
     gap: 2px;
   }
 
-  body.guest-mode.guest-owner-mode #overviewView .metric-icon {
+  body.guest-owner-mode #overviewView .metric-icon {
     width: 18px;
     height: 18px;
     flex-basis: 18px;
     border-radius: 6px;
   }
 
-  body.guest-mode.guest-owner-mode #overviewView .metric-icon svg {
+  body.guest-owner-mode #overviewView .metric-icon svg {
     width: 11px;
     height: 11px;
   }
 
-  body.guest-mode.guest-owner-mode #overviewView .metric-label {
+  body.guest-owner-mode #overviewView .metric-label {
     min-height: 20px;
     font-size: 9px;
     line-height: 1.1;
     -webkit-line-clamp: 2;
   }
 
-  body.guest-mode.guest-owner-mode #overviewView .metric strong {
+  body.guest-owner-mode #overviewView .metric strong {
     margin-top: 1px;
     font-size: 20px;
     line-height: 1;
