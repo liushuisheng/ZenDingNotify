@@ -22,7 +22,7 @@
 | 新缺陷通知 | 个人视角同步到新缺陷时，显示页面通知卡片并尝试发送浏览器通知 |
 | 钉钉推送 | 支持 P1/P2 风险提醒、超期缺陷单、Dry-run、加签和群内 @所有人 |
 | 定时同步 | 首次全量、日常增量；新增负责人时仅为新增人员补充全量详情 |
-| 运行审计 | 推送记录、同步记录、页面访问日志和操作日志，页面默认展示最近 7 天 |
+| 运行审计 | 推送记录、同步记录、页面访问日志和操作日志；访问日志包含 IP、会话状态及可识别的终端信息 |
 | 移动端 | 总览、缺陷列表、日志、手动推送和配置页面均提供移动端交互 |
 
 ```mermaid
@@ -258,6 +258,7 @@ Copy-Item .env.example .env
 
 ```dotenv
 API_BASE_URL=https://notify.example.com
+PUBLIC_BASE_URL=https://notify.example.com
 ```
 
 然后仍然访问 `http://localhost:8787`。本地 Node 服务会代理所有 `/api/*` 请求，登录 Cookie 保留在本地域名下，不需要额外配置 CORS。
@@ -270,6 +271,7 @@ API_BASE_URL=https://notify.example.com
 | --- | --- | --- |
 | `PORT` | `8787` | HTTP 监听端口 |
 | `API_BASE_URL` | 空 | 远程 API 代理地址；生产服务通常应留空 |
+| `PUBLIC_BASE_URL` | 自动识别 | 推送消息中“缺陷总览”的公开访问地址；定时推送环境建议显式配置 |
 | `LOG_LEVEL` | `silent` | `silent`、`error`、`info` 或 `debug` |
 
 ## 调试日志

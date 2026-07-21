@@ -12,8 +12,9 @@ const configPath = path.join(dataDir, "config.json");
 const storePath = path.join(dataDir, "store.json");
 await loadEnvFile(path.join(rootDir, ".env"));
 const port = Number(process.env.PORT || 8787);
-const apiBaseUrl = normalizeApiBaseUrl(process.env.API_BASE_URL);
-const GUEST_OVERVIEW_URL = "http://10.2.81.252:8787/guest";
+const apiBaseUrl = normalizeBaseUrl(process.env.API_BASE_URL, "API_BASE_URL");
+const publicBaseUrl = normalizeBaseUrl(process.env.PUBLIC_BASE_URL, "PUBLIC_BASE_URL");
+let detectedPublicBaseUrl = "";
 const LOG_LEVELS = { silent: 0, error: 1, info: 2, debug: 3 };
 const logLevelName = getCliLogLevel() || String(process.env.LOG_LEVEL || process.env.ZEND_LOG || "silent").toLowerCase();
 const logLevel = LOG_LEVELS[logLevelName] ?? (["1", "true", "yes", "on"].includes(logLevelName) ? LOG_LEVELS.info : LOG_LEVELS.silent);
@@ -29,6 +30,8 @@ const ZENTAO_BUGS_PAGE_SIZE = 2000;
 const ZENTAO_RECENT_EDITED_LIMIT = 80;
 const ZENTAO_DETAIL_CONCURRENCY = 16;
 const MIN_DEFECT_CACHE_TTL_MS = 60 * 1000;
+const ACCESS_ONLINE_TIMEOUT_MS = 10 * 1000;
+const ACCESS_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 const ADMIN_COOKIE_NAME = "zend_admin";
 const GUEST_COOKIE_PREFIX = "zend_guest_";
 const OVERVIEW_DEFECT_DIFFICULTIES = new Set(["simple", "medium", "hard"]);
@@ -163,6 +166,7 @@ store.requirementOverviewDefects = normalizeOverviewDefectIds(store.requirementO
 store.overviewDefectDifficulties = normalizeOverviewDefectDifficulties(store.overviewDefectDifficulties);
 store.guestPasswords = normalizeGuestPasswords(store.guestPasswords);
 store.accessLogs = normalizeAccessLogs(store.accessLogs);
+closeStaleAccessLogs();
 store.operationLogs = normalizeOperationLogs(store.operationLogs);
 await saveConfig();
 await saveStore();
@@ -206,6 +210,7 @@ server.listen(port, () => {
 
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  rememberPublicBaseUrl(req);
 
   if (apiBaseUrl && url.pathname.startsWith("/api/")) {
     await proxyApiRequest(req, res, url);
@@ -387,7 +392,7 @@ async function route(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/access-logs") {
-    sendJson(res, 200, { logs: getRecentAccessLogs() });
+    sendJson(res, 200, { logs: await getRecentAccessLogs() });
     return;
   }
 
@@ -1050,7 +1055,7 @@ function buildRuleMessage(defects) {
     `### 禅道缺陷提醒`,
     ``,
     `#### 📌 关键数据`,
-    `> P0/P1 未完成：**${urgentCount}** 个`,
+    `> P0/P1 未完成：**${urgentCount}** 个<br>`,
     `> 温馨提示：相关处理人可按需查看`,
     ``,
     `#### 📋 待处理明细`,
@@ -1070,11 +1075,11 @@ function buildYesterdayMessage(defects, related, remaining, range) {
     `### 昨日缺陷处理日报`,
     ``,
     `#### 📌 关键数据`,
-    `> 统计日期：${formatDate(range.start)}`,
-    `> 昨日新增：**${added.length}** 个`,
-    `> 昨日解决/关闭：**${resolved.length}** 个`,
-    `> 当前未完成：**${remaining.length}** 个`,
-    `> P1/P2 未完成：**${urgentRemaining.length}** 个`,
+    `> 统计日期：${formatDate(range.start)}<br>`,
+    `> 昨日新增：**${added.length}** 个<br>`,
+    `> 昨日解决/关闭：**${resolved.length}** 个<br>`,
+    `> 当前未完成：**${remaining.length}** 个<br>`,
+    `> P1/P2 未完成：**${urgentRemaining.length}** 个<br>`,
     `> 非 P1/P2 未完成：**${normalRemaining.length}** 个`,
     ``,
     `#### 📋 剩余 P1/P2`,
@@ -1099,9 +1104,7 @@ function buildP1P2Message(defects, stats = {}) {
       `### 今日 P1/P2 缺陷风险提醒`,
       ``,
       `#### 📌 关键数据`,
-      `> 今日新增缺陷：**${todayAdded}** 个`,
-      `> 今日已修复缺陷：**${todayResolved}** 个`,
-      `> 当前剩余 P1/P2 未完成：**0** 个`,
+      `> 今日新增缺陷：**${todayAdded}** 个<br>今日已修复缺陷：**${todayResolved}** 个<br>当前剩余 P1/P2 未完成：**0** 个`,
       ``,
       formatMessageFooter()
     ].join("\n");
@@ -1110,10 +1113,7 @@ function buildP1P2Message(defects, stats = {}) {
     `### 今日 P1/P2 缺陷风险提醒`,
     ``,
     `#### 📌 关键数据`,
-    `> 今日新增缺陷：**${todayAdded}** 个`,
-    `> 今日已修复缺陷：**${todayResolved}** 个`,
-    `> 当前剩余 P1/P2 未完成：**${sortedDefects.length}** 个`,
-    `> 温馨提示：相关处理人可按需查看`,
+    `> 今日新增缺陷：**${todayAdded}** 个<br>今日已修复缺陷：**${todayResolved}** 个<br>当前剩余 P1/P2 未完成：**${sortedDefects.length}** 个<br>温馨提示：相关处理人可按需查看`,
     ``,
     `#### 📋 待处理明细`,
     ``,
@@ -1139,7 +1139,7 @@ function buildOverdueMessage(defects) {
     `### 超期缺陷单`,
     ``,
     `#### 📌 关键数据`,
-    `> 超期激活缺陷：**${sortedDefects.length}** 个`,
+    `> 超期激活缺陷：**${sortedDefects.length}** 个<br>`,
     `> 温馨提示：相关处理人可按需查看`,
     ``,
     `#### 📋 超期明细`,
@@ -1151,7 +1151,7 @@ function buildOverdueMessage(defects) {
 }
 
 function formatMessageFooter() {
-  return `🔎 查看完整数据：[缺陷总览](${GUEST_OVERVIEW_URL})`;
+  return `🔎 查看完整数据：[缺陷总览](${getGuestOverviewUrl()})`;
 }
 
 function formatDefects(defects) {
@@ -1767,8 +1767,9 @@ function getRecentSyncLogs() {
     .slice(0, 100);
 }
 
-function getRecentAccessLogs() {
+async function getRecentAccessLogs() {
   store.accessLogs = normalizeAccessLogs(store.accessLogs);
+  if (closeStaleAccessLogs()) await saveStore();
   const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
   return store.accessLogs
     .filter((log) => {
@@ -1841,6 +1842,7 @@ async function recordGuestAccess(req, url, details = {}) {
     method: req.method,
     path: requestPath,
     userAgent: String(req.headers["user-agent"] || "").slice(0, 240),
+    device: detectAccessDevice(req.headers["user-agent"]),
     accessedAt: now,
     durationMs: 0,
     lastSeenAt: "",
@@ -1869,6 +1871,10 @@ async function recordGuestVisitDuration(req, body = {}) {
   store.accessLogs = normalizeAccessLogs(store.accessLogs);
 
   let log = sessionId ? store.accessLogs.find((item) => item.sessionId === sessionId) : null;
+  if (log?.endedAt) {
+    const endedAt = new Date(log.endedAt).getTime();
+    if (!Number.isFinite(endedAt) || Date.now() - endedAt > ACCESS_ONLINE_TIMEOUT_MS) log = null;
+  }
   if (!log) log = findReusableAccessLog({ ip, owner, path: rawPath, sessionId });
 
   if (!log) {
@@ -1891,6 +1897,7 @@ async function recordGuestVisitDuration(req, body = {}) {
 
   log.sessionId = sessionId || log.sessionId || "";
   log.owner = owner || log.owner || "";
+  log.device = normalizeAccessDevice(body.device, log.userAgent || req.headers["user-agent"]);
   log.durationMs = Math.max(Number(log.durationMs) || 0, durationMs);
   log.lastSeenAt = now;
   if (ended) log.endedAt = now;
@@ -1917,7 +1924,7 @@ function findReusableAccessLog({ ip, owner, path, sessionId }) {
       if (!areSameGuestVisitPath(item.path, path)) return false;
       const touchedAt = new Date(item.endedAt || item.lastSeenAt || item.accessedAt).getTime();
       if (!Number.isFinite(touchedAt)) return false;
-      const maxGap = item.endedAt ? 10 * 1000 : 10 * 60 * 1000;
+      const maxGap = item.endedAt ? ACCESS_ONLINE_TIMEOUT_MS : ACCESS_SESSION_TIMEOUT_MS;
       return now - touchedAt <= maxGap;
     });
 }
@@ -1952,10 +1959,24 @@ function closeOtherOpenAccessLogs({ ip, owner, path, keepId, closedAt }) {
 
 function getAccessLogSessionStatus(log) {
   if (log.endedAt) return "ended";
-  if (log.awayAt) return "away";
   const lastSeenAt = new Date(log.lastSeenAt || log.accessedAt).getTime();
   if (!Number.isFinite(lastSeenAt)) return "away";
-  return Date.now() - lastSeenAt <= 10 * 1000 ? "online" : "away";
+  if (Date.now() - lastSeenAt > ACCESS_SESSION_TIMEOUT_MS) return "ended";
+  if (log.awayAt) return "away";
+  return Date.now() - lastSeenAt <= ACCESS_ONLINE_TIMEOUT_MS ? "online" : "away";
+}
+
+function closeStaleAccessLogs(now = Date.now()) {
+  let changed = false;
+  store.accessLogs.forEach((log) => {
+    if (log.type !== "page" || log.endedAt) return;
+    const lastSeenAt = new Date(log.lastSeenAt || log.accessedAt).getTime();
+    if (!Number.isFinite(lastSeenAt) || now - lastSeenAt <= ACCESS_SESSION_TIMEOUT_MS) return;
+    log.endedAt = log.awayAt || log.lastSeenAt || new Date(now).toISOString();
+    log.awayAt = "";
+    changed = true;
+  });
+  return changed;
 }
 
 function shouldRecordGuestAccess(req, url, details) {
@@ -2847,8 +2868,109 @@ function normalizeAccessLogs(value) {
     lastSeenAt: String(log?.lastSeenAt || ""),
     endedAt: String(log?.endedAt || ""),
     awayAt: String(log?.awayAt || ""),
-    sessionId: String(log?.sessionId || "")
+    sessionId: String(log?.sessionId || ""),
+    device: normalizeAccessDevice(log?.device, log?.userAgent)
   })).filter((log) => log.accessedAt).slice(-1000);
+}
+
+function normalizeAccessDevice(value, userAgent = "") {
+  const detected = detectAccessDevice(userAgent);
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const model = normalizeDeviceText(source.model, 80) || detected.model;
+  const platform = normalizeDeviceText(source.platform, 40);
+  const platformVersion = normalizeDeviceText(source.platformVersion, 40);
+  return {
+    type: normalizeDeviceType(source.type, source.mobile, detected.type),
+    brand: normalizeDeviceText(source.brand, 40) || inferDeviceBrand(model || detected.model, userAgent) || detected.brand,
+    model,
+    os: formatClientDeviceOs(platform, platformVersion) || normalizeDeviceText(source.os, 80) || detected.os,
+    browser: normalizeDeviceText(source.browser, 80) || detected.browser
+  };
+}
+
+function detectAccessDevice(userAgent = "") {
+  const ua = String(userAgent || "").slice(0, 500);
+  const tablet = /iPad|Tablet|PlayBook|Silk/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua));
+  const mobile = /Mobile|iPhone|iPod|Android.*Mobile|Windows Phone/i.test(ua);
+  const model = extractDeviceModel(ua);
+  return {
+    type: tablet ? "平板" : mobile ? "手机" : "电脑",
+    brand: inferDeviceBrand(model, ua),
+    model,
+    os: detectDeviceOs(ua),
+    browser: detectDeviceBrowser(ua)
+  };
+}
+
+function extractDeviceModel(userAgent) {
+  if (/iPhone/i.test(userAgent)) return "iPhone";
+  if (/iPad/i.test(userAgent)) return "iPad";
+  const android = userAgent.match(/Android[^;)]*;\s*(?:[^;)]*;\s*)?([^;)]*?)(?:\s+Build\/|;\s*wv|\))/i);
+  if (!android) return "";
+  const model = android[1].replace(/\b(?:zh-cn|zh-CN|en-us|en-US)\b/gi, "").trim();
+  return /^(?:wv|mobile)$/i.test(model) ? "" : normalizeDeviceText(model, 80);
+}
+
+function inferDeviceBrand(model = "", userAgent = "") {
+  const text = `${model} ${userAgent}`;
+  if (/iPhone|iPad|iPod|Macintosh/i.test(text)) return "Apple";
+  if (/HUAWEI|Huawei|JAD-|NOH-|ANA-|LIO-/i.test(text)) return "Huawei";
+  if (/HONOR|ANY-|BVL-|ELP-/i.test(text)) return "HONOR";
+  if (/Xiaomi|Redmi|\bMI\s|M2\d{3}/i.test(text)) return "Xiaomi";
+  if (/OPPO|\bCPH\d+/i.test(text)) return "OPPO";
+  if (/vivo|\bV\d{4}/i.test(text)) return "vivo";
+  if (/OnePlus|\bNE\d{4}/i.test(text)) return "OnePlus";
+  if (/Samsung|\bSM-[A-Z0-9]+/i.test(text)) return "Samsung";
+  if (/Pixel/i.test(text)) return "Google";
+  return "";
+}
+
+function detectDeviceOs(userAgent) {
+  const windows = userAgent.match(/Windows NT\s+([\d.]+)/i);
+  if (windows) return `Windows ${windows[1] === "10.0" ? "10/11" : windows[1]}`;
+  const android = userAgent.match(/Android\s+([\d.]+)/i);
+  if (android) return `Android ${android[1]}`;
+  const ios = userAgent.match(/(?:CPU (?:iPhone )?OS|iPhone OS)\s+([\d_]+)/i);
+  if (ios) return `iOS ${ios[1].replace(/_/g, ".")}`;
+  const mac = userAgent.match(/Mac OS X\s+([\d_]+)/i);
+  if (mac) return `macOS ${mac[1].replace(/_/g, ".")}`;
+  if (/Linux/i.test(userAgent)) return "Linux";
+  return "未知系统";
+}
+
+function detectDeviceBrowser(userAgent) {
+  const patterns = [
+    [/Edg(?:A|iOS)?\/([\d.]+)/i, "Edge"],
+    [/OPR\/([\d.]+)/i, "Opera"],
+    [/Firefox\/([\d.]+)/i, "Firefox"],
+    [/(?:Chrome|CriOS)\/([\d.]+)/i, "Chrome"],
+    [/Version\/([\d.]+).*Safari/i, "Safari"]
+  ];
+  for (const [pattern, name] of patterns) {
+    const match = userAgent.match(pattern);
+    if (match) return `${name} ${match[1].split(".")[0]}`;
+  }
+  return "未知浏览器";
+}
+
+function normalizeDeviceText(value, maxLength) {
+  return String(value || "").replace(/[\u0000-\u001F\u007F]/g, "").trim().slice(0, maxLength);
+}
+
+function normalizeDeviceType(value, mobile, fallback) {
+  const type = normalizeDeviceText(value, 12);
+  if (["手机", "平板", "电脑"].includes(type)) return type;
+  if (typeof mobile === "boolean") return mobile ? "手机" : fallback;
+  return fallback;
+}
+
+function formatClientDeviceOs(platform, version) {
+  if (!["Windows", "macOS", "Android", "iOS", "Linux", "Chrome OS"].includes(platform)) return "";
+  if (platform === "Windows" && version) {
+    const major = Number.parseInt(version.split(".")[0], 10);
+    if (Number.isFinite(major)) return `Windows ${major >= 13 ? "11" : "10"}`;
+  }
+  return `${platform}${version ? ` ${version}` : ""}`;
 }
 
 function normalizeOperationLogs(value) {
@@ -2933,15 +3055,45 @@ function trimSlash(value) {
   return String(value || "").replace(/\/+$/, "");
 }
 
-function normalizeApiBaseUrl(value) {
+function normalizeBaseUrl(value, variableName) {
   const normalized = trimSlash(String(value || "").trim());
   if (!normalized) return "";
   const parsed = new URL(normalized);
-  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("API_BASE_URL must use http or https");
+  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error(`${variableName} must use http or https`);
   if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
-    throw new Error("API_BASE_URL must contain only the server origin, without a path, query, or hash");
+    throw new Error(`${variableName} must contain only the server origin, without a path, query, or hash`);
   }
   return parsed.origin;
+}
+
+function rememberPublicBaseUrl(req) {
+  if (publicBaseUrl || apiBaseUrl) return;
+  const forwardedProtocol = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const forwardedHost = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim();
+  const protocol = forwardedProtocol || (req.socket.encrypted ? "https" : "http");
+  const host = forwardedHost || String(req.headers.host || "").trim();
+  if (!host || !["http", "https"].includes(protocol)) return;
+  try {
+    const candidate = new URL(`${protocol}://${host}`).origin;
+    if (detectedPublicBaseUrl && !isLoopbackOrigin(detectedPublicBaseUrl) && isLoopbackOrigin(candidate)) return;
+    detectedPublicBaseUrl = candidate;
+  } catch {
+    // Invalid forwarded headers are ignored; the configured or local fallback remains available.
+  }
+}
+
+function getGuestOverviewUrl() {
+  const baseUrl = publicBaseUrl || apiBaseUrl || detectedPublicBaseUrl || `http://localhost:${port}`;
+  return `${trimSlash(baseUrl)}/guest`;
+}
+
+function isLoopbackOrigin(value) {
+  try {
+    const hostname = new URL(value).hostname.replace(/^\[|\]$/g, "");
+    return ["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(hostname);
+  } catch {
+    return false;
+  }
 }
 
 async function loadEnvFile(filePath) {

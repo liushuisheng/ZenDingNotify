@@ -448,7 +448,7 @@
   .logs-data-table td:nth-child(1),
   .logs-data-table td:nth-child(3),
   .access-logs-data-table td:nth-child(1),
-  .access-logs-data-table td:nth-child(7),
+  .access-logs-data-table td:nth-child(8),
   .operation-logs-data-table td:nth-child(1),
   .operation-logs-data-table td:nth-child(4),
   .sync-logs-data-table td:nth-child(1),
@@ -465,7 +465,7 @@
     line-height: 1.5;
   }
 
-  .access-logs-data-table td:nth-child(7) {
+  .access-logs-data-table td:nth-child(8) {
     padding-top: 7px;
     border-top: 1px solid #edf0f4;
     color: #64748b;
@@ -2483,7 +2483,7 @@ tbody tr:hover {
 
 .access-logs-data-table {
   table-layout: fixed;
-  min-width: 1040px;
+  min-width: 1280px;
 }
 
 .access-logs-data-table th:nth-child(1),
@@ -2493,7 +2493,7 @@ tbody tr:hover {
 
 .access-logs-data-table th:nth-child(2),
 .access-logs-data-table td:nth-child(2) {
-  width: 110px;
+  width: 100px;
 }
 
 .access-logs-data-table th:nth-child(3),
@@ -2503,21 +2503,26 @@ tbody tr:hover {
 
 .access-logs-data-table th:nth-child(4),
 .access-logs-data-table td:nth-child(4) {
-  width: 150px;
+  width: 140px;
 }
 
 .access-logs-data-table th:nth-child(5),
 .access-logs-data-table td:nth-child(5) {
-  width: 140px;
+  width: 260px;
 }
 
 .access-logs-data-table th:nth-child(6),
 .access-logs-data-table td:nth-child(6) {
-  width: 110px;
+  width: 140px;
 }
 
 .access-logs-data-table th:nth-child(7),
 .access-logs-data-table td:nth-child(7) {
+  width: 110px;
+}
+
+.access-logs-data-table th:nth-child(8),
+.access-logs-data-table td:nth-child(8) {
   width: 250px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4313,7 +4318,7 @@ tbody tr:hover {
   }
 
   .access-logs-data-table {
-    min-width: 980px;
+    min-width: 1180px;
   }
 
   .operation-logs-data-table {
@@ -5023,9 +5028,10 @@ tbody tr:hover {
   .access-logs-data-table td:nth-child(2)::before { content: "访问时长"; }
   .access-logs-data-table td:nth-child(3)::before { content: "会话状态"; }
   .access-logs-data-table td:nth-child(4)::before { content: "IP"; }
-  .access-logs-data-table td:nth-child(5)::before { content: "访问对象"; }
-  .access-logs-data-table td:nth-child(6)::before { content: "类型"; }
-  .access-logs-data-table td:nth-child(7)::before { content: "路径"; }
+  .access-logs-data-table td:nth-child(5)::before { content: "终端"; }
+  .access-logs-data-table td:nth-child(6)::before { content: "访问对象"; }
+  .access-logs-data-table td:nth-child(7)::before { content: "类型"; }
+  .access-logs-data-table td:nth-child(8)::before { content: "路径"; }
 
   .operation-logs-data-table td:nth-child(1)::before { content: "操作时间"; }
   .operation-logs-data-table td:nth-child(2)::before { content: "IP"; }
@@ -5222,6 +5228,51 @@ tbody tr:hover {
 
   #overviewView .metric-foot {
     display: none;
+  }
+
+  body.guest-owner-mode #overviewView .metrics {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  body.guest-owner-mode #overviewView .metric {
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    height: 80px;
+    min-height: 80px;
+    padding: 5px;
+    flex: none;
+  }
+
+  body.guest-owner-mode #overviewView .metric-heading {
+    gap: 2px;
+  }
+
+  body.guest-owner-mode #overviewView .metric-icon {
+    width: 18px;
+    height: 18px;
+    flex-basis: 18px;
+    border-radius: 6px;
+  }
+
+  body.guest-owner-mode #overviewView .metric-icon svg {
+    width: 11px;
+    height: 11px;
+  }
+
+  body.guest-owner-mode #overviewView .metric-label {
+    min-height: 20px;
+    font-size: 9px;
+    line-height: 1.1;
+    -webkit-line-clamp: 2;
+  }
+
+  body.guest-owner-mode #overviewView .metric strong {
+    margin-top: 1px;
+    font-size: 20px;
+    line-height: 1;
   }
 
   .mobile-pending-switch {
@@ -5958,8 +6009,14 @@ tbody tr:hover {
     grid-column: 1 / -1;
   }
 
+  .access-logs-data-table .mobile-log-card > td:nth-child(5) {
+    grid-column: 1 / -1;
+    color: #334155;
+    line-height: 1.45;
+  }
+
   .logs-data-table .mobile-log-card > td:nth-child(2),
-  .access-logs-data-table .mobile-log-card > td:nth-child(6),
+  .access-logs-data-table .mobile-log-card > td:nth-child(7),
   .sync-logs-data-table .mobile-log-card > td:nth-child(4) {
     color: #9a6700;
     font-weight: 650;
@@ -5973,7 +6030,7 @@ tbody tr:hover {
   .logs-data-table .mobile-log-card > td:nth-child(5),
   .logs-data-table .mobile-log-card > td:nth-child(7),
   .access-logs-data-table .mobile-log-card > td:nth-child(2),
-  .access-logs-data-table .mobile-log-card > td:nth-child(5),
+  .access-logs-data-table .mobile-log-card > td:nth-child(6),
   .operation-logs-data-table .mobile-log-card > td:nth-child(3),
   .sync-logs-data-table .mobile-log-card > td:nth-child(2),
   .sync-logs-data-table .mobile-log-card > td:nth-child(5) {
@@ -5988,7 +6045,7 @@ tbody tr:hover {
   }
 
   .access-logs-data-table .mobile-log-card > td:nth-child(4),
-  .access-logs-data-table .mobile-log-card > td:nth-child(7),
+  .access-logs-data-table .mobile-log-card > td:nth-child(8),
   .operation-logs-data-table .mobile-log-card > td:nth-child(2),
   .operation-logs-data-table .mobile-log-card > td:nth-child(5) {
     color: #64748b;
@@ -5997,7 +6054,7 @@ tbody tr:hover {
   .logs-data-table .mobile-log-card > td:nth-child(3),
   .operation-logs-data-table .mobile-log-card > td:nth-child(4),
   .sync-logs-data-table .mobile-log-card > td:nth-child(6),
-  .access-logs-data-table .mobile-log-card > td:nth-child(7) {
+  .access-logs-data-table .mobile-log-card > td:nth-child(8) {
     min-height: 0;
     padding: 6px 2px 0;
     border-top: 1px solid #edf1f5;
@@ -6188,8 +6245,8 @@ tbody tr:hover {
 
   .mobile-log-back-top {
     position: fixed;
-    right: 14px;
-    bottom: calc(18px + env(safe-area-inset-bottom));
+    right: 22px;
+    bottom: calc(44px + env(safe-area-inset-bottom));
     z-index: 72;
     display: grid;
     width: 42px;
@@ -6417,7 +6474,7 @@ tbody tr:hover {
   }
 
   .main.settings-mode ~ .mobile-log-back-top {
-    bottom: calc(76px + env(safe-area-inset-bottom));
+    bottom: calc(102px + env(safe-area-inset-bottom));
   }
 
   #defectsView .condition-bar {
@@ -6443,7 +6500,7 @@ tbody tr:hover {
   #defectsTable .defects-data-table tr {
     position: relative;
     grid-template-columns: max-content max-content max-content minmax(0, 1fr);
-    gap: 8px 6px;
+    gap: 8px 3px;
     overflow: hidden;
     padding: 13px 14px 12px 13px;
     border: 1px solid rgba(214, 222, 233, 0.78);
@@ -6472,7 +6529,7 @@ tbody tr:hover {
     grid-column: 1;
     align-self: center;
     min-height: 24px;
-    padding: 3px 8px;
+    padding: 3px 7px;
     border: 1px solid #e7ebf1;
     background: #f7f9fc;
     color: #66758a;
@@ -6506,7 +6563,7 @@ tbody tr:hover {
 
   #defectsTable .defects-data-table .table-badge {
     min-height: 24px;
-    padding: 3px 9px;
+    padding: 3px 7px;
     font-size: 11px;
     line-height: 16px;
   }
@@ -6532,6 +6589,7 @@ tbody tr:hover {
     grid-column: span 2;
     align-items: baseline;
     gap: 6px;
+    contain: inline-size;
     min-height: 21px;
     padding-top: 1px;
     color: #283548;
