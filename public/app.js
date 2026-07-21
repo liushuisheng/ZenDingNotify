@@ -1388,7 +1388,7 @@ function renderOverview() {
     <button class="metric ${tone}" type="button" data-defect-mode="${mode}">
       <span class="metric-heading">
         <span class="metric-icon" aria-hidden="true">${metricIcon(label)}</span>
-        <span class="metric-label">${label}</span>
+        <span class="metric-label${metricLabelClass(label)}">${label}</span>
       </span>
       <strong>${value}</strong>
       <span class="metric-foot">${metricFoot(label)}</span>
@@ -3561,6 +3561,11 @@ function metricFoot(label) {
     已解决待验证: "等待测试验证"
   };
   return foots[label] || "";
+}
+
+function metricLabelClass(label) {
+  const length = Array.from(String(label || "").replace(/\s/g, "")).length;
+  return length > 6 ? " metric-label-compact" : "";
 }
 
 function metricIcon(label) {
