@@ -5209,12 +5209,12 @@ tbody tr:hover {
     max-width: none;
     height: 80px;
     min-height: 80px;
-    padding: 5px 3px;
+    padding: 7px 5px 6px;
     flex: none;
   }
 
   body.guest-owner-mode #overviewView .metric-heading {
-    gap: 2px;
+    gap: 3px;
   }
 
   body.guest-owner-mode #overviewView .metric-icon {
@@ -5254,7 +5254,7 @@ tbody tr:hover {
   }
 
   body.guest-owner-mode #overviewView .metric strong {
-    margin-top: 1px;
+    margin-top: 2px;
     color: #1d4ed8;
     font-size: 20px;
     line-height: 1;
