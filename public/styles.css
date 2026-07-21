@@ -554,6 +554,46 @@ body {
   grid-template-columns: 218px 1fr;
 }
 
+body.app-booting {
+  display: block;
+}
+
+body.app-booting .sidebar,
+body.app-booting .main,
+body.app-booting .login-screen {
+  visibility: hidden;
+}
+
+body.app-booting::before {
+  content: "";
+  position: fixed;
+  z-index: 1000;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  margin: -24px 0 0 -14px;
+  border: 3px solid rgba(37, 99, 235, 0.16);
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: appBootSpin 0.72s linear infinite;
+}
+
+body.app-booting::after {
+  content: "正在加载";
+  position: fixed;
+  z-index: 1000;
+  top: calc(50% + 18px);
+  left: 50%;
+  color: #64748b;
+  font-size: 13px;
+  transform: translateX(-50%);
+}
+
+@keyframes appBootSpin {
+  to { transform: rotate(360deg); }
+}
+
 button,
 input,
 select {
@@ -2649,7 +2689,7 @@ tbody tr:hover {
 .sync-logs-data-table th:nth-child(6),
 .sync-logs-data-table td:nth-child(6) {
   width: 390px;
-  white-space: normal;
+  white-space: nowrap;
   line-height: 1.6;
 }
 
