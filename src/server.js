@@ -30,6 +30,7 @@ const ZENTAO_BUGS_PAGE_SIZE = 2000;
 const ZENTAO_RECENT_EDITED_LIMIT = 80;
 const ZENTAO_DETAIL_CONCURRENCY = 16;
 const MIN_DEFECT_CACHE_TTL_MS = 60 * 1000;
+const TREND_RETENTION_DAYS = 730;
 const ACCESS_ONLINE_TIMEOUT_MS = 10 * 1000;
 const ACCESS_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 const ADMIN_COOKIE_NAME = "zend_admin";
@@ -164,10 +165,12 @@ store.defects = store.defects?.length ? store.defects : (config.zentao.enabled ?
 store.pinnedOverviewDefects = normalizePinnedDefectIds(store.pinnedOverviewDefects);
 store.requirementOverviewDefects = normalizeOverviewDefectIds(store.requirementOverviewDefects);
 store.overviewDefectDifficulties = normalizeOverviewDefectDifficulties(store.overviewDefectDifficulties);
+store.trendSnapshots = normalizeTrendSnapshots(store.trendSnapshots);
 store.guestPasswords = normalizeGuestPasswords(store.guestPasswords);
 store.accessLogs = normalizeAccessLogs(store.accessLogs);
 closeStaleAccessLogs();
 store.operationLogs = normalizeOperationLogs(store.operationLogs);
+recordDailyTrendSnapshots();
 await saveConfig();
 await saveStore();
 
@@ -303,6 +306,34 @@ async function route(req, res) {
       return;
     }
     sendJson(res, 200, buildOverview({ owner: ownerScope.owner }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/trends") {
+    const ownerScope = getValidatedOwnerScopeFromUrl(url);
+    if (ownerScope.invalid) {
+      sendJson(res, 404, { ok: false, error: "人员不存在", message: `人员不存在：${ownerScope.raw}` });
+      return;
+    }
+    sendJson(res, 200, buildTrendData({
+      owner: ownerScope.owner,
+      granularity: url.searchParams.get("granularity")
+    }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/trend-snapshot") {
+    const ownerScope = getValidatedOwnerScopeFromUrl(url);
+    if (ownerScope.invalid) {
+      sendJson(res, 404, { ok: false, error: "人员不存在", message: `人员不存在：${ownerScope.raw}` });
+      return;
+    }
+    const date = String(url.searchParams.get("date") || formatDate(new Date()));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !parseLocalDate(date)) {
+      sendJson(res, 400, { ok: false, error: "日期格式无效", message: "日期格式应为 YYYY-MM-DD" });
+      return;
+    }
+    sendJson(res, 200, buildTrendSnapshotData(date, ownerScope.owner));
     return;
   }
 
@@ -564,6 +595,7 @@ async function doFetchAndStoreDefects(trigger) {
     durationMs: Date.now() - new Date(startedAt).getTime(),
     ok: true
   });
+  recordDailyTrendSnapshots();
   await saveStore();
 
   return { ok: true, source, count: store.defects.length, detailCount: enrichment.detailCount + recentTransferEnrichment.detailCount, syncMode: syncMode.mode };
@@ -998,6 +1030,260 @@ function buildOverview(options = {}) {
     recentLogs: store.pushLogs.slice(-5).reverse(),
     lastJobRuns: store.jobRuns.slice(-5).reverse()
   };
+}
+
+function recordDailyTrendSnapshots() {
+  const date = formatDate(new Date());
+  const recordedAt = new Date().toISOString();
+  const owners = getConfiguredAssigneeNames().filter((owner) => !isTestOwner(owner));
+  const snapshots = [
+    createTrendSnapshot(date, "", buildOverview(), recordedAt),
+    ...owners.map((owner) => createTrendSnapshot(date, owner, buildOverview({ owner }), recordedAt))
+  ];
+  const replacementKeys = new Set(snapshots.map((snapshot) => trendSnapshotKey(snapshot.date, snapshot.owner)));
+  const cutoff = new Date();
+  cutoff.setHours(0, 0, 0, 0);
+  cutoff.setDate(cutoff.getDate() - TREND_RETENTION_DAYS);
+  store.trendSnapshots = [
+    ...normalizeTrendSnapshots(store.trendSnapshots).filter((snapshot) => {
+      const snapshotDate = parseLocalDate(snapshot.date);
+      return snapshotDate && snapshotDate >= cutoff && !replacementKeys.has(trendSnapshotKey(snapshot.date, snapshot.owner));
+    }),
+    ...snapshots
+  ].sort((left, right) => left.date.localeCompare(right.date) || left.owner.localeCompare(right.owner));
+}
+
+function createTrendSnapshot(date, owner, overview, recordedAt) {
+  const ownerStats = overview.owners?.[0] || {};
+  const defectIds = buildTrendSnapshotDefectIds(owner, overview);
+  return {
+    date,
+    owner: normalizeAssigneeName(owner),
+    recordedAt,
+    metrics: {
+      todayAdded: Number(owner ? ownerStats.todayAdded : overview.stats.todayAdded) || 0,
+      todayResolved: Number(owner ? ownerStats.todayResolved : overview.stats.todayResolved) || 0,
+      todayClosed: Number(overview.stats.todayClosed) || 0,
+      todayTransferred: owner ? Number(ownerStats.todayTransferred) || 0 : 0,
+      todayReturned: owner ? Number(ownerStats.todayReturned) || 0 : 0,
+      openTotal: Number(overview.stats.openTotal) || 0,
+      urgentOpen: Number(overview.stats.urgentOpen) || 0,
+      normalOpen: Number(overview.stats.normalOpen) || 0,
+      resolvedPendingVerify: Number(overview.stats.resolvedPendingVerify) || 0,
+      abnormalOpen: Number(overview.stats.abnormalOpen) || 0
+    },
+    defectIds
+  };
+}
+
+function buildTrendSnapshotDefectIds(owner, overview) {
+  const normalizedOwner = normalizeAssigneeName(owner);
+  const defects = getFilteredDefects({ includeStatuses: false, owner: normalizedOwner });
+  const today = getTodayRange();
+  const opened = defects.filter((defect) => isInRange(defect.openedDate, today));
+  const added = normalizedOwner
+    ? opened.filter((defect) => namesEqual(getInitialAssignedTo(defect), normalizedOwner))
+    : uniqueDefects([...opened, ...defects.filter((defect) => isTodayIncomingTransferToConfiguredDefect(defect, today))]);
+  const resolved = defects.filter((defect) => isFrontendResolvedDefect(defect)
+    && isInRange(getDeveloperResolvedAt(defect), today)
+    && (!normalizedOwner || getDeveloperOwnerFields(defect).some((value) => namesEqual(value, normalizedOwner))));
+  const closed = defects.filter((defect) => isFrontendClosedDefect(defect) && isInRange(defect.closedDate, today));
+  const transferred = normalizedOwner
+    ? defects.filter((defect) => isTodayTransferredDefect(defect) && namesEqual(getTransferFrom(defect), normalizedOwner))
+    : [];
+  const returned = normalizedOwner
+    ? defects.filter((defect) => isTodayReturnedDefect(defect) && namesEqual(defect.assignedTo, normalizedOwner))
+    : [];
+  const toIds = (items) => [...new Set((items || []).map((defect) => String(defect.id || "")).filter(Boolean))];
+  return {
+    todayAdded: toIds(added),
+    todayResolved: toIds(resolved),
+    todayClosed: toIds(closed),
+    todayTransferred: toIds(transferred),
+    todayReturned: toIds(returned),
+    openTotal: toIds([...(overview.urgentOpen || []), ...(overview.normalOpen || [])]),
+    urgentOpen: toIds(overview.urgentOpen),
+    normalOpen: toIds(overview.normalOpen),
+    resolvedPendingVerify: toIds(overview.resolvedPendingVerify),
+    abnormalOpen: toIds(overview.abnormalOpen)
+  };
+}
+
+function buildTrendData(options = {}) {
+  const owner = normalizeAssigneeName(options.owner);
+  const granularity = ["day", "week", "month"].includes(options.granularity) ? options.granularity : "day";
+  recordDailyTrendSnapshots();
+  const dailyRanges = getTrendDailyRanges(granularity);
+  const snapshots = normalizeTrendSnapshots(store.trendSnapshots)
+    .filter((snapshot) => namesEqual(snapshot.owner, owner));
+  const dailyPoints = dailyRanges.map((range) => {
+    const date = formatDate(range.start);
+    const snapshot = snapshots.find((item) => item.date === date);
+    const flow = calculateTrendFlowMetrics(range, owner);
+    return {
+      date,
+      label: formatTrendDayLabel(range.start),
+      ...flow,
+      openTotal: snapshot?.metrics.openTotal ?? null,
+      urgentOpen: snapshot?.metrics.urgentOpen ?? null,
+      normalOpen: snapshot?.metrics.normalOpen ?? null,
+      resolvedPendingVerify: snapshot?.metrics.resolvedPendingVerify ?? null,
+      abnormalOpen: snapshot?.metrics.abnormalOpen ?? null,
+      snapshotRecordedAt: snapshot?.recordedAt || ""
+    };
+  });
+  const points = granularity === "day" ? dailyPoints : aggregateTrendPoints(dailyPoints, granularity);
+  return {
+    granularity,
+    owner,
+    ownerName: owner || "全部负责人",
+    generatedAt: new Date().toISOString(),
+    retentionDays: TREND_RETENTION_DAYS,
+    points
+  };
+}
+
+function buildTrendSnapshotData(date, owner = "") {
+  recordDailyTrendSnapshots();
+  const normalizedOwner = normalizeAssigneeName(owner);
+  const snapshots = normalizeTrendSnapshots(store.trendSnapshots)
+    .filter((snapshot) => namesEqual(snapshot.owner, normalizedOwner))
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const snapshot = snapshots.find((item) => item.date === date);
+  return {
+    date,
+    owner: normalizedOwner,
+    ownerName: normalizedOwner || "全部负责人",
+    available: Boolean(snapshot),
+    recordedAt: snapshot?.recordedAt || "",
+    metrics: snapshot?.metrics || null,
+    defectIds: snapshot?.defectIds || null,
+    availableDates: snapshots.map((item) => item.date)
+  };
+}
+
+function getTrendDailyRanges(granularity) {
+  const today = getTodayRange().start;
+  const days = granularity === "day" ? 14 : granularity === "week" ? 12 * 7 : 366;
+  const start = new Date(today);
+  start.setDate(start.getDate() - days + 1);
+  const ranges = [];
+  for (const cursor = new Date(start); cursor <= today; cursor.setDate(cursor.getDate() + 1)) {
+    const rangeStart = new Date(cursor);
+    const rangeEnd = new Date(rangeStart);
+    rangeEnd.setDate(rangeEnd.getDate() + 1);
+    ranges.push({ start: rangeStart, end: rangeEnd });
+  }
+  return ranges;
+}
+
+function calculateTrendFlowMetrics(range, owner) {
+  const defects = getFilteredDefects({ includeStatuses: false });
+  const ownerMatches = (value) => !owner || namesEqual(value, owner);
+  const opened = defects.filter((defect) => isInRange(defect.openedDate, range));
+  const incoming = defects.filter((defect) => isIncomingTransferDuringRange(defect, range));
+  const todayAdded = owner
+    ? opened.filter((defect) => ownerMatches(getInitialAssignedTo(defect))).length
+    : uniqueDefects([...opened, ...incoming]).length;
+  const todayResolved = defects.filter((defect) => {
+    return isFrontendResolvedDefect(defect)
+      && isInRange(getDeveloperResolvedAt(defect), range)
+      && (!owner || getDeveloperOwnerFields(defect).some(ownerMatches));
+  }).length;
+  const todayClosed = defects.filter((defect) => {
+    return isFrontendClosedDefect(defect)
+      && isInRange(defect.closedDate, range)
+      && (!owner || [defect.resolvedBy, defect.assignedFrom, getInitialAssignedTo(defect)].some(ownerMatches));
+  }).length;
+  const transfers = owner ? defects.filter((defect) => isTransferDuringRange(defect, range)) : [];
+  return {
+    todayAdded,
+    todayResolved,
+    todayClosed,
+    todayTransferred: transfers.filter((defect) => ownerMatches(getTransferFrom(defect))).length,
+    todayReturned: transfers.filter((defect) => ownerMatches(getTransferTo(defect))).length
+  };
+}
+
+function isTransferDuringRange(defect, range) {
+  return Boolean(getTransferFrom(defect))
+    && Boolean(getTransferTo(defect))
+    && !namesEqual(getTransferFrom(defect), getTransferTo(defect))
+    && isInRange(getTransferAt(defect), range)
+    && !isResolvedByTransferAction(defect);
+}
+
+function isIncomingTransferDuringRange(defect, range) {
+  return isTransferDuringRange(defect, range) && isFrontendOwner(getTransferTo(defect));
+}
+
+function aggregateTrendPoints(dailyPoints, granularity) {
+  const groups = new Map();
+  dailyPoints.forEach((point) => {
+    const date = parseLocalDate(point.date);
+    const keyDate = granularity === "week" ? startOfWeek(date) : new Date(date.getFullYear(), date.getMonth(), 1);
+    const key = formatDate(keyDate);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(point);
+  });
+  const limit = 12;
+  return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right)).slice(-limit).map(([key, items]) => {
+    const lastSnapshot = [...items].reverse().find((item) => item.openTotal !== null);
+    const endDate = items.at(-1).date;
+    return {
+      date: key,
+      endDate,
+      label: granularity === "week" ? formatTrendWeekLabel(key, endDate) : formatTrendMonthLabel(key),
+      todayAdded: sumTrendMetric(items, "todayAdded"),
+      todayResolved: sumTrendMetric(items, "todayResolved"),
+      todayClosed: sumTrendMetric(items, "todayClosed"),
+      todayTransferred: sumTrendMetric(items, "todayTransferred"),
+      todayReturned: sumTrendMetric(items, "todayReturned"),
+      openTotal: lastSnapshot?.openTotal ?? null,
+      urgentOpen: lastSnapshot?.urgentOpen ?? null,
+      normalOpen: lastSnapshot?.normalOpen ?? null,
+      resolvedPendingVerify: lastSnapshot?.resolvedPendingVerify ?? null,
+      abnormalOpen: lastSnapshot?.abnormalOpen ?? null,
+      snapshotRecordedAt: lastSnapshot?.snapshotRecordedAt || ""
+    };
+  });
+}
+
+function sumTrendMetric(points, key) {
+  return points.reduce((total, point) => total + (Number(point[key]) || 0), 0);
+}
+
+function startOfWeek(date) {
+  const result = new Date(date);
+  const day = result.getDay() || 7;
+  result.setDate(result.getDate() - day + 1);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function formatTrendDayLabel(date) {
+  return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatTrendWeekLabel(start, end) {
+  const startDate = parseLocalDate(start);
+  const endDate = parseLocalDate(end);
+  return `${formatTrendDayLabel(startDate)}-${formatTrendDayLabel(endDate)}`;
+}
+
+function formatTrendMonthLabel(value) {
+  const date = parseLocalDate(value);
+  return `${date.getMonth() + 1}月`;
+}
+
+function parseLocalDate(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+function trendSnapshotKey(date, owner) {
+  return `${date}:${normalizeAssigneeName(owner)}`;
 }
 
 function getPublicOverviewOperationScope(req, url) {
@@ -2595,9 +2881,9 @@ function isPublicRequest(req, url) {
   if (req.method !== "GET") return false;
   if (url.pathname === "/" || url.pathname === "/index.html") return true;
   if (isGuestRoutePath(url.pathname)) return true;
-  if (["/api/overview", "/api/defects"].includes(url.pathname)) return isPublicDataRequest(req, url);
+  if (["/api/overview", "/api/defects", "/api/trends", "/api/trend-snapshot"].includes(url.pathname)) return isPublicDataRequest(req, url);
   if (["/api/public-config", "/api/config-status", "/api/session"].includes(url.pathname)) return true;
-  return ["/app.js", "/styles.css", "/favicon.svg"].includes(url.pathname);
+  return ["/app.js", "/styles.css", "/favicon.svg", "/vendor/echarts/echarts.min.js"].includes(url.pathname);
 }
 
 function isPublicDataRequest(req, url) {
@@ -2820,7 +3106,7 @@ async function saveStore() {
 }
 
 function defaultStore() {
-  return { defects: [], pushLogs: [], accessLogs: [], operationLogs: [], jobRuns: [], lastScheduledRun: {}, pinnedOverviewDefects: [], requirementOverviewDefects: [], overviewDefectDifficulties: {}, guestPasswords: {}, fetchSync: { assignees: [], assigneeWatermarks: {}, lastFetchAt: "" } };
+  return { defects: [], pushLogs: [], accessLogs: [], operationLogs: [], jobRuns: [], lastScheduledRun: {}, pinnedOverviewDefects: [], requirementOverviewDefects: [], overviewDefectDifficulties: {}, trendSnapshots: [], guestPasswords: {}, fetchSync: { assignees: [], assigneeWatermarks: {}, lastFetchAt: "" } };
 }
 
 function normalizePinnedDefectIds(value) {
@@ -2838,6 +3124,31 @@ function normalizeOverviewDefectDifficulties(value) {
     String(id || "").trim(),
     String(difficulty || "").trim()
   ]).filter(([id, difficulty]) => id && OVERVIEW_DEFECT_DIFFICULTIES.has(difficulty)));
+}
+
+function normalizeTrendSnapshots(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((snapshot) => {
+    if (!snapshot || !/^\d{4}-\d{2}-\d{2}$/.test(String(snapshot.date || ""))) return null;
+    const metrics = snapshot.metrics && typeof snapshot.metrics === "object" ? snapshot.metrics : {};
+    const defectIds = snapshot.defectIds && typeof snapshot.defectIds === "object" && !Array.isArray(snapshot.defectIds)
+      ? snapshot.defectIds
+      : null;
+    return {
+      date: String(snapshot.date),
+      owner: normalizeAssigneeName(snapshot.owner),
+      recordedAt: String(snapshot.recordedAt || ""),
+      metrics: Object.fromEntries([
+        "todayAdded", "todayResolved", "todayClosed", "todayTransferred", "todayReturned",
+        "openTotal", "urgentOpen", "normalOpen", "resolvedPendingVerify", "abnormalOpen"
+      ].map((key) => [key, Math.max(0, Number(metrics[key]) || 0)])),
+      defectIds: defectIds ? Object.fromEntries([
+        "todayAdded", "todayResolved", "todayClosed", "todayTransferred", "todayReturned",
+        "openTotal", "urgentOpen", "normalOpen", "resolvedPendingVerify", "abnormalOpen"
+      ].map((key) => [key, [...new Set((Array.isArray(defectIds[key]) ? defectIds[key] : [])
+        .map((id) => String(id || "").trim()).filter(Boolean))]])) : null
+    };
+  }).filter(Boolean);
 }
 
 function normalizeGuestPasswords(value) {

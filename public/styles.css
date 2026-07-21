@@ -251,10 +251,7 @@
   }
 
   #defectsView > .panel,
-  #logsView > .panel,
-  #accessLogsView > .panel,
-  #operationLogsView > .panel,
-  #syncLogsView > .panel {
+  #systemLogsView > .system-log-panel {
     padding: 0;
     border: 0;
     border-radius: 0;
@@ -571,7 +568,7 @@ button {
   display: none !important;
 }
 
-body.guest-mode .nav-item:not([data-view="overview"]):not([data-view="defects"]),
+body.guest-mode .nav-item:not([data-view="overview"]):not([data-view="trends"]):not([data-view="defects"]),
 body.guest-mode #refreshBtn {
   display: none;
 }
@@ -1209,15 +1206,13 @@ body.guest-mode .last-sync::before {
 }
 
 .main.list-mode #defectsView.active,
-.main.list-mode #logsView.active,
-.main.list-mode #accessLogsView.active,
-.main.list-mode #operationLogsView.active,
-.main.list-mode #syncLogsView.active {
+.main.list-mode #systemLogsView.active {
   height: 100%;
   min-height: 0;
 }
 
-.main.list-mode #defectsView.active {
+.main.list-mode #defectsView.active,
+.main.list-mode #systemLogsView.active {
   display: flex;
   flex-direction: column;
 }
@@ -1229,23 +1224,58 @@ body.guest-mode .last-sync::before {
 
 .main.list-mode #defectsView > .panel,
 .main.list-mode #defectsTable,
-.main.list-mode #logsView .panel,
 .main.list-mode #logsTable,
-.main.list-mode #accessLogsView .panel,
+.main.list-mode #systemLogsView .system-log-panel,
 .main.list-mode #accessLogsTable,
-.main.list-mode #operationLogsView .panel,
 .main.list-mode #operationLogsTable,
-.main.list-mode #syncLogsView .panel,
 .main.list-mode #syncLogsTable {
   min-height: 0;
 }
 
 .main.list-mode #defectsView > .panel,
-.main.list-mode #logsView .panel,
-.main.list-mode #accessLogsView .panel,
-.main.list-mode #operationLogsView .panel,
-.main.list-mode #syncLogsView .panel {
+.main.list-mode #systemLogsView .system-log-panel {
   display: grid;
+}
+
+.main.list-mode #systemLogsView .system-log-panel {
+  flex: 1 1 auto;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.system-log-panel[hidden] { display: none !important; }
+
+.system-log-tabs {
+  display: inline-grid;
+  width: fit-content;
+  grid-template-columns: repeat(4, minmax(104px, 1fr));
+  flex: 0 0 auto;
+  padding: 4px;
+  border: 1px solid #dce4ef;
+  border-radius: 8px;
+  background: #eef3f8;
+}
+
+.system-log-tabs button {
+  min-height: 36px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 6px;
+  color: #64748b;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.system-log-tabs button.active {
+  color: #1556c0;
+  background: #fff;
+  box-shadow: 0 2px 7px rgba(15, 23, 42, 0.1);
+  font-weight: 700;
+}
+
+.system-log-tabs button:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: -2px;
 }
 
 .main.list-mode #defectsView > .panel {
@@ -4275,10 +4305,7 @@ tbody tr:hover {
   }
 
   .main.list-mode #defectsView.active,
-  .main.list-mode #logsView.active,
-  .main.list-mode #accessLogsView.active,
-  .main.list-mode #operationLogsView.active,
-  .main.list-mode #syncLogsView.active {
+  .main.list-mode #systemLogsView.active {
     height: auto;
   }
 
@@ -4290,6 +4317,20 @@ tbody tr:hover {
   .main.list-mode #defectsTable.is-scrollable {
     height: auto;
   }
+
+  .system-log-tabs {
+    width: 100%;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding: 3px;
+  }
+
+  .system-log-tabs button {
+    min-height: 34px;
+    padding: 0 6px;
+    font-size: 13px;
+  }
+
+  #systemLogsView.view.active { gap: 10px; }
 
   #defectsTable.is-scrollable,
   .table-scroll.is-scrollable {
@@ -5185,6 +5226,21 @@ tbody tr:hover {
     overflow-wrap: anywhere;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
+  }
+
+  body:not(.guest-mode):not(.guest-owner-mode) #overviewView .metric-label.metric-label-tight {
+    display: block;
+    overflow: visible;
+    min-height: 12px;
+    font-size: 9px;
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    -webkit-line-clamp: unset;
+  }
+
+  body:not(.guest-mode):not(.guest-owner-mode) #overviewView .metric-heading {
+    min-height: 53px;
   }
 
   #overviewView .metric-heading {
@@ -6295,6 +6351,8 @@ tbody tr:hover {
     pointer-events: none;
   }
 
+  #actionsView.view.active { gap: 8px; }
+
   #actionsView .action-grid {
     grid-template-columns: 1fr;
     gap: 10px;
@@ -6743,5 +6801,712 @@ tbody tr:hover {
     min-height: 38px;
     padding: 7px 14px;
     font-size: 14px;
+  }
+}
+/* Defect trends */
+#trendsView.view.active {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+#trendsView > *,
+.trend-summary,
+.trend-chart-grid,
+.trend-chart-scroll {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.trend-snapshot-trigger {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  color: #245ca6;
+  background: transparent;
+  cursor: pointer;
+}
+
+.trend-snapshot-trigger:hover { color: #1556c0; background: #eaf2ff; }
+.trend-snapshot-trigger svg { width: 20px; height: 20px; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.trend-snapshot-trigger .snapshot-focus { stroke: #0891b2; stroke-width: 2.1; }
+.trend-snapshot-trigger .snapshot-spark { fill: #7c3aed; stroke: #7c3aed; stroke-width: 0.7; transform-origin: 16.5px 16.5px; transition: transform 180ms ease; }
+.trend-snapshot-trigger:hover .snapshot-spark { transform: scale(1.12) rotate(8deg); }
+
+.trend-snapshot-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(2px);
+  animation: trendSnapshotFadeIn 180ms ease both;
+}
+
+.trend-snapshot-backdrop-button {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.trend-snapshot-drawer {
+  position: relative;
+  z-index: 1;
+  width: min(460px, 92vw);
+  height: 100%;
+  padding: 22px;
+  overflow: auto;
+  background: #f4f7fb;
+  box-shadow: -18px 0 42px rgba(15, 23, 42, 0.2);
+  animation: trendSnapshotSlideIn 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+body.trend-snapshot-open { overflow: hidden; }
+
+.trend-snapshot-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.trend-snapshot-drawer-head > div { display: grid; gap: 4px; }
+.trend-snapshot-drawer-head strong { color: #0f1f35; font-size: 21px; }
+.trend-snapshot-drawer-head span { color: #718096; font-size: 12px; }
+
+.trend-snapshot-close,
+.trend-calendar-head button,
+.trend-snapshot-result-head > button {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: #52657d;
+  background: transparent;
+  cursor: pointer;
+}
+
+.trend-snapshot-close { width: 34px; height: 34px; border-radius: 7px; background: #e8eef6; }
+.trend-snapshot-close:hover { color: #1d4ed8; background: #dde7f5; }
+.trend-snapshot-close svg,
+.trend-calendar-head svg,
+.trend-snapshot-result-head svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.trend-calendar {
+  position: absolute;
+  z-index: 8;
+  top: calc(100% + 8px);
+  left: 50%;
+  width: 390px;
+  padding: 14px;
+  border: 1px solid #dce5f0;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 38px rgba(30, 41, 59, 0.18);
+  transform: translateX(-50%);
+  animation: trendCalendarOpen 150ms ease both;
+}
+
+.trend-calendar.hidden { display: none; }
+
+.trend-calendar-head {
+  display: grid;
+  grid-template-columns: 34px 1fr 34px;
+  align-items: center;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.trend-calendar-head strong { color: #23364f; font-size: 15px; }
+.trend-calendar-head button { width: 34px; height: 32px; border-radius: 7px; }
+.trend-calendar-head button:hover { color: #1d4ed8; background: #eef4ff; }
+.trend-calendar-head button:disabled { color: #c3ccd8; cursor: default; background: transparent; }
+
+.trend-calendar-weekdays,
+.trend-calendar-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.trend-calendar-weekdays { margin-bottom: 5px; color: #8a98aa; font-size: 11px; text-align: center; }
+.trend-calendar-weekdays span { line-height: 28px; }
+.trend-calendar-days button,
+.trend-calendar-blank { width: 36px; height: 36px; min-width: 0; justify-self: center; }
+.trend-calendar-days button { border: 0; border-radius: 7px; color: #334155; background: #f4f7fb; font: inherit; font-size: 13px; cursor: pointer; }
+.trend-calendar-days button:hover { color: #1556c0; background: #e7f0ff; }
+.trend-calendar-days button.selected { color: #fff; background: #2563eb; box-shadow: 0 5px 12px rgba(37, 99, 235, 0.25); font-weight: 700; }
+.trend-calendar-days button:disabled { color: #c5ceda; background: transparent; cursor: default; }
+
+.trend-snapshot-result-head {
+  display: grid;
+  grid-template-columns: 34px 1fr 34px;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+
+.trend-snapshot-date-control { position: relative; display: grid; justify-items: center; min-width: 0; text-align: center; }
+.trend-snapshot-result-head strong { color: #172b46; font-size: 16px; }
+.trend-snapshot-result-head > button { width: 34px; height: 34px; border-radius: 7px; color: #2563eb; }
+.trend-snapshot-result-head > button:hover { background: #e7f0ff; }
+.trend-snapshot-result-head > button:disabled { color: #c1cbd8; cursor: default; background: transparent; }
+
+.trend-snapshot-date-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  color: #2563eb;
+  background: transparent;
+  cursor: pointer;
+}
+
+.trend-snapshot-date-trigger:hover,
+.trend-snapshot-date-trigger[aria-expanded="true"] { background: #e7f0ff; }
+.trend-snapshot-date-trigger > svg:first-child { width: 16px; height: 16px; }
+.trend-snapshot-date-trigger .trend-snapshot-date-chevron { width: 14px; height: 14px; transition: transform 150ms ease; }
+.trend-snapshot-date-trigger[aria-expanded="true"] .trend-snapshot-date-chevron { transform: rotate(180deg); }
+
+@keyframes trendSnapshotFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes trendSnapshotSlideIn { from { transform: translateX(28px); opacity: 0.7; } to { transform: translateX(0); opacity: 1; } }
+@keyframes trendCalendarOpen { from { opacity: 0; transform: translate(-50%, -5px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+.trend-snapshot-backdrop.hidden {
+  display: none;
+}
+
+.trend-snapshot-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.trend-snapshot-metrics.owner-snapshot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.trend-snapshot-card {
+  position: relative;
+  display: grid;
+  align-content: space-between;
+  min-height: 84px;
+  padding: 12px 13px;
+  overflow: hidden;
+  border: 1px solid #e1e8f1;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 7px 18px rgba(30, 41, 59, 0.05);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.trend-snapshot-card:not(.loading-card):hover {
+  border-color: #b8c9e3;
+  box-shadow: 0 10px 24px rgba(30, 64, 175, 0.1);
+  transform: translateY(-1px);
+}
+
+.trend-snapshot-card:not(.loading-card):focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.trend-snapshot-card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: #2563eb;
+  content: "";
+}
+
+.trend-snapshot-card-title { display: flex; align-items: center; gap: 8px; color: #53657d; font-size: 14px; white-space: nowrap; }
+.trend-snapshot-card-icon { display: inline-grid; width: 27px; height: 27px; flex: 0 0 27px; place-items: center; border-radius: 7px; color: #2563eb; background: #eaf1ff; }
+.trend-snapshot-card-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.trend-snapshot-card strong { color: #1d4ed8; font-size: 30px; line-height: 1; }
+.trend-snapshot-card.done::before { background: #059669; }
+.trend-snapshot-card.done .trend-snapshot-card-icon { color: #059669; background: #e4f6f0; }
+.trend-snapshot-card.done strong { color: #047857; }
+.trend-snapshot-card.total::before { background: #4f46e5; }
+.trend-snapshot-card.total .trend-snapshot-card-icon { color: #4f46e5; background: #eeedff; }
+.trend-snapshot-card.total strong { color: #4f46e5; }
+.trend-snapshot-card.normal::before { background: #b45309; }
+.trend-snapshot-card.normal .trend-snapshot-card-icon { color: #b45309; background: #fff3e3; }
+.trend-snapshot-card.normal strong { color: #b45309; }
+.trend-snapshot-card.urgent::before { background: #dc2626; }
+.trend-snapshot-card.urgent .trend-snapshot-card-icon { color: #dc2626; background: #feecec; }
+.trend-snapshot-card.urgent strong { color: #dc2626; }
+
+.trend-snapshot-message {
+  grid-column: 1 / -1;
+  display: flex;
+  min-height: 112px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px dashed #ced9e7;
+  border-radius: 8px;
+  color: #718096;
+  background: rgba(255, 255, 255, 0.58);
+  text-align: center;
+}
+
+.trend-snapshot-message strong { color: #334155; }
+.trend-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 0;
+}
+
+.trend-range-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(76px, 1fr));
+  padding: 4px;
+  border: 1px solid #dce4ef;
+  border-radius: 8px;
+  background: #f4f7fb;
+}
+
+.trend-range-tabs button {
+  min-height: 34px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 6px;
+  color: #64748b;
+  background: transparent;
+  cursor: pointer;
+}
+
+.trend-range-tabs button.active {
+  color: #1556c0;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.1);
+  font-weight: 700;
+}
+
+.trend-range-hint {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.trend-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 0;
+}
+
+.trend-summary-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  min-height: 104px;
+  padding: 16px 18px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(30, 41, 59, 0.06);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.trend-summary-card:hover {
+  transform: translateY(-2px);
+  border-color: #bfd2ef;
+  box-shadow: 0 12px 26px rgba(30, 64, 175, 0.1);
+}
+
+.trend-summary-card:active { transform: translateY(0); }
+
+.trend-summary-card:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+
+.trend-summary-card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: #2563eb;
+  content: "";
+}
+
+.trend-summary-heading {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #53657d;
+  font-size: 14px;
+}
+
+.trend-summary-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 7px;
+  background: #eaf1ff;
+  color: #2563eb;
+}
+
+.trend-summary-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trend-summary-card.done .trend-summary-icon { background: #e4f6f0; color: #059669; }
+.trend-summary-card.total .trend-summary-icon { background: #eeedff; color: #4f46e5; }
+.trend-summary-card.urgent .trend-summary-icon { background: #feecec; color: #dc2626; }
+
+.trend-summary-card strong {
+  color: #1d4ed8;
+  font-size: 32px;
+  line-height: 1;
+}
+
+.trend-summary-card small {
+  justify-self: end;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.trend-summary-card.done::before { background: #059669; }
+.trend-summary-card.done strong { color: #047857; }
+.trend-summary-card.total::before { background: #4f46e5; }
+.trend-summary-card.total strong { color: #4f46e5; }
+.trend-summary-card.urgent::before { background: #dc2626; }
+.trend-summary-card.urgent strong { color: #dc2626; }
+.trend-summary-card small.up { color: #dc2626; }
+.trend-summary-card small.down { color: #047857; }
+
+.trend-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.trend-chart-card {
+  min-width: 0;
+  padding: 16px 16px 10px;
+}
+
+.trend-chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 8px;
+}
+
+.trend-chart-head h2 {
+  margin: 0 0 4px;
+  color: #0f1f35;
+  font-size: 18px;
+}
+
+.trend-chart-head p {
+  margin: 0;
+  color: #718096;
+  font-size: 12px;
+}
+
+.trend-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 12px;
+  color: #52637a;
+  font-size: 12px;
+}
+
+.trend-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.trend-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.trend-chart {
+  width: 100%;
+  height: 290px;
+}
+
+.trend-snapshot-empty,
+.trend-empty {
+  display: flex;
+  min-height: 220px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: #718096;
+  text-align: center;
+}
+
+.trend-snapshot-empty strong,
+.trend-empty strong { color: #334155; }
+.trend-chart-loading { display: block; min-height: 220px; }
+
+@media (max-width: 1100px) {
+  .trend-chart-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 760px) {
+  #trendsView { min-width: 0; }
+
+  #trendsView.view.active { gap: 8px; }
+
+  .trend-snapshot-trigger { width: 28px; height: 28px; padding: 0; }
+  .trend-snapshot-backdrop { align-items: flex-end; }
+  .trend-snapshot-drawer { width: 100%; height: auto; max-height: 91dvh; padding: 16px 14px calc(16px + env(safe-area-inset-bottom)); border-radius: 12px 12px 0 0; animation-name: trendSnapshotRiseIn; }
+  .trend-snapshot-drawer-head { margin-bottom: 12px; }
+  .trend-snapshot-drawer-head strong { font-size: 19px; }
+  .trend-calendar { width: min(360px, calc(100vw - 28px)); padding: 10px; }
+  .trend-calendar-head { margin-bottom: 7px; }
+  .trend-calendar-weekdays,
+  .trend-calendar-days { gap: 3px; }
+  .trend-calendar-days button,
+  .trend-calendar-blank { width: 34px; height: 34px; }
+  .trend-snapshot-result-head { margin: 2px 0 10px; }
+  .trend-snapshot-metrics,
+  .trend-snapshot-metrics.owner-snapshot { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .trend-snapshot-card { min-height: 76px; padding: 9px 10px; box-shadow: none; }
+  .trend-snapshot-card::before { width: 3px; }
+  .trend-snapshot-card-title { display: flex; gap: 6px; font-size: 11px; line-height: 1.1; }
+  .trend-snapshot-card-title > span:last-child { white-space: nowrap; }
+  .trend-snapshot-card.long-label .trend-snapshot-card-title,
+  .trend-snapshot-card.very-long-label .trend-snapshot-card-title { font-size: 10px; }
+  .trend-snapshot-card-icon { width: 21px; height: 21px; flex-basis: 21px; border-radius: 6px; }
+  .trend-snapshot-card-icon svg { width: 13px; height: 13px; }
+  .trend-snapshot-card strong { font-size: 24px; }
+  .trend-snapshot-message { min-height: 96px; }
+  @keyframes trendSnapshotRiseIn { from { transform: translateY(28px); opacity: 0.75; } to { transform: translateY(0); opacity: 1; } }
+
+  .trend-toolbar {
+    position: static;
+    z-index: auto;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    backdrop-filter: none;
+  }
+
+  .trend-range-tabs {
+    width: 100%;
+    grid-template-columns: repeat(3, 1fr);
+    padding: 3px;
+  }
+
+  .trend-range-tabs button { min-height: 32px; padding: 0 8px; }
+  .trend-range-hint { display: none; }
+
+  .trend-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 0;
+  }
+
+  .trend-summary-card {
+    min-height: 78px;
+    padding: 9px 11px 9px 13px;
+    box-shadow: none;
+  }
+
+  .trend-summary-card:hover { transform: none; box-shadow: none; }
+
+  .trend-summary-heading { gap: 6px; font-size: 12px; }
+  .trend-summary-icon { width: 23px; height: 23px; flex-basis: 23px; border-radius: 6px; }
+  .trend-summary-icon svg { width: 14px; height: 14px; }
+  .trend-summary-card strong { font-size: 25px; }
+  .trend-summary-card small { font-size: 10px; }
+  .trend-chart-grid { gap: 8px; }
+
+  .trend-chart-card {
+    padding: 10px 10px 7px;
+    border-radius: 8px;
+  }
+
+  .trend-chart-head {
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  .trend-chart-head h2 { font-size: 16px; }
+  .trend-chart-head p { margin-bottom: 7px; }
+  .trend-legend { justify-content: flex-start; gap: 6px 10px; }
+
+  .trend-chart { height: 250px; }
+  .trend-snapshot-empty { min-height: 170px; }
+}
+
+@media (max-width: 760px) {
+  .access-logs-data-table tr.mobile-log-card {
+    position: relative;
+    padding: 8px;
+    overflow: hidden;
+    border: 1px solid #dce5f0;
+    border-left: 0;
+    border-radius: 13px;
+    background: #fbfdff;
+    box-shadow: 0 8px 22px rgba(30, 41, 59, 0.07);
+  }
+
+  .access-logs-data-table tr.mobile-log-card::before {
+    position: absolute;
+    z-index: 2;
+    inset: 0 auto 0 0;
+    width: 3px;
+    border-radius: 13px 0 0 13px;
+    background: #6983a8;
+    content: "";
+  }
+
+  .access-logs-data-table tr.mobile-log-card.session-online {
+    border-color: #ccebdd;
+    box-shadow: 0 9px 24px rgba(5, 150, 105, 0.1);
+  }
+
+  .access-logs-data-table tr.mobile-log-card.session-online::before { background: #059669; }
+
+  .access-logs-data-table tr.mobile-log-card.session-away {
+    border-color: #f1dfb9;
+    box-shadow: 0 9px 24px rgba(217, 119, 6, 0.09);
+  }
+
+  .access-logs-data-table tr.mobile-log-card.session-away::before { background: #d97706; }
+  .access-logs-data-table tr.mobile-log-card.session-ended::before { background: #59779f; }
+
+  .access-logs-data-table .mobile-log-card > td {
+    border: 1px solid #edf2f7;
+    background: #f5f8fc;
+  }
+
+  .access-logs-data-table .mobile-log-card > td:first-child {
+    min-height: 38px;
+    margin: -8px -8px 1px;
+    padding: 9px 96px 9px 12px;
+    border: 0;
+    border-bottom: 1px solid #e6edf5;
+    background: #f0f5fb;
+    color: #172b46;
+    font-size: 13px;
+  }
+
+  .access-logs-data-table .mobile-log-card.session-online > td:first-child { background: #edf9f4; }
+  .access-logs-data-table .mobile-log-card.session-away > td:first-child { background: #fff8e9; }
+
+  .access-logs-data-table .mobile-log-card > td:first-child::before {
+    background: #dfe9f6;
+    color: #3f608a;
+  }
+
+  .access-logs-data-table .mobile-log-card.session-online > td:first-child::before {
+    background: #d7f1e5;
+    color: #087653;
+  }
+
+  .access-logs-data-table .mobile-log-card.session-away > td:first-child::before {
+    background: #fbe8bc;
+    color: #956000;
+  }
+
+  .access-logs-data-table .mobile-log-card > td:nth-child(3) {
+    position: absolute;
+    z-index: 3;
+    top: 8px;
+    right: 8px;
+    display: block;
+    width: auto;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .access-logs-data-table .mobile-log-card > td:nth-child(3)::before { display: none; }
+
+  .access-logs-data-table .session-status {
+    gap: 6px;
+    min-height: 24px;
+    padding: 4px 8px;
+    border: 1px solid transparent;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .access-logs-data-table .session-status::before {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 6px;
+    border-radius: 50%;
+    background: currentColor;
+    content: "";
+  }
+
+  .access-logs-data-table .session-status.online {
+    border-color: #b8e5d1;
+    color: #047857;
+    background: #dcf7ea;
+  }
+
+  .access-logs-data-table .session-status.away {
+    border-color: #f2daa5;
+    color: #a16207;
+    background: #fff1cc;
+  }
+
+  .access-logs-data-table .session-status.ended {
+    border-color: #d8e2ef;
+    color: #4d6b92;
+    background: #eaf0f7;
+  }
+
+  .access-logs-data-table .mobile-log-card > td:nth-child(2),
+  .access-logs-data-table .mobile-log-card > td:nth-child(6) {
+    color: #1e5ba8;
+  }
+
+  .access-logs-data-table .mobile-log-card > td:nth-child(5) {
+    border-color: #e5edf6;
+    background: #f8fbfe;
   }
 }
