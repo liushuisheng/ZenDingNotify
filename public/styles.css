@@ -6499,6 +6499,7 @@ tbody tr:hover {
     grid-column: span 2;
     align-items: baseline;
     gap: 6px;
+    contain: inline-size;
     min-height: 21px;
     padding-top: 1px;
     color: #283548;
