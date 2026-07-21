@@ -1428,6 +1428,26 @@ body.guest-owner-mode .metrics {
   line-height: 1;
 }
 
+#overviewView .metric strong {
+  color: #1d4ed8;
+}
+
+#overviewView .metric.done strong {
+  color: #047857;
+}
+
+#overviewView .metric.urgent strong {
+  color: #dc2626;
+}
+
+#overviewView .metric.normal strong {
+  color: #b45309;
+}
+
+#overviewView .metric.total strong {
+  color: #4f46e5;
+}
+
 .metric-foot {
   margin-top: 6px;
 }
@@ -5288,25 +5308,8 @@ tbody tr:hover {
 
   body.guest-owner-mode #overviewView .metric strong {
     margin-top: 2px;
-    color: #1d4ed8;
     font-size: 20px;
     line-height: 1;
-  }
-
-  body.guest-owner-mode #overviewView .metric.done strong {
-    color: #047857;
-  }
-
-  body.guest-owner-mode #overviewView .metric.urgent strong {
-    color: #dc2626;
-  }
-
-  body.guest-owner-mode #overviewView .metric.normal strong {
-    color: #b45309;
-  }
-
-  body.guest-owner-mode #overviewView .metric.total strong {
-    color: #4f46e5;
   }
 
   .mobile-pending-switch {
