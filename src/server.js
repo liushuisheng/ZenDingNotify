@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import http from "node:http";
+import { networkInterfaces } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +15,7 @@ await loadEnvFile(path.join(rootDir, ".env"));
 const port = Number(process.env.PORT || 8787);
 const apiBaseUrl = normalizeBaseUrl(process.env.API_BASE_URL, "API_BASE_URL");
 const publicBaseUrl = normalizeBaseUrl(process.env.PUBLIC_BASE_URL, "PUBLIC_BASE_URL");
+const localNetworkIp = getLocalNetworkIp();
 let detectedPublicBaseUrl = "";
 const LOG_LEVELS = { silent: 0, error: 1, info: 2, debug: 3 };
 const logLevelName = getCliLogLevel() || String(process.env.LOG_LEVEL || process.env.ZEND_LOG || "silent").toLowerCase();
@@ -33,6 +35,10 @@ const MIN_DEFECT_CACHE_TTL_MS = 60 * 1000;
 const TREND_RETENTION_DAYS = 730;
 const ACCESS_ONLINE_TIMEOUT_MS = 10 * 1000;
 const ACCESS_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
+const IP_LOCATION_FAILURE_TTL_MS = 6 * 60 * 60 * 1000;
+const ipLocationCache = new Map();
+const ipLocationLookups = new Map();
+const ipLocationFailures = new Map();
 const ADMIN_COOKIE_NAME = "zend_admin";
 const GUEST_COOKIE_PREFIX = "zend_guest_";
 const OVERVIEW_DEFECT_DIFFICULTIES = new Set(["simple", "medium", "hard"]);
@@ -173,6 +179,8 @@ store.operationLogs = normalizeOperationLogs(store.operationLogs);
 recordDailyTrendSnapshots();
 await saveConfig();
 await saveStore();
+void enrichStoredAccessLogLocations();
+void enrichStoredOperationLogLocations();
 
 if (apiBaseUrl) {
   logInfo("api-proxy:enabled", { target: sanitizeUrl(apiBaseUrl) });
@@ -2056,6 +2064,7 @@ function getRecentSyncLogs() {
 async function getRecentAccessLogs() {
   store.accessLogs = normalizeAccessLogs(store.accessLogs);
   if (closeStaleAccessLogs()) await saveStore();
+  void enrichStoredAccessLogLocations();
   const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
   return store.accessLogs
     .filter((log) => {
@@ -2064,6 +2073,7 @@ async function getRecentAccessLogs() {
     })
     .map((log) => ({
       ...log,
+      ipLocation: getKnownIpLocation(log.ip, log.ipLocation),
       sessionStatus: getAccessLogSessionStatus(log)
     }))
     .sort((a, b) => new Date(b.accessedAt).getTime() - new Date(a.accessedAt).getTime())
@@ -2072,12 +2082,17 @@ async function getRecentAccessLogs() {
 
 function getRecentOperationLogs() {
   store.operationLogs = normalizeOperationLogs(store.operationLogs);
+  void enrichStoredOperationLogLocations();
   const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
   return store.operationLogs
     .filter((log) => {
       const time = new Date(log.operatedAt).getTime();
       return Number.isFinite(time) && time >= since;
     })
+    .map((log) => ({
+      ...log,
+      ipLocation: getKnownIpLocation(log.ip, log.ipLocation)
+    }))
     .sort((a, b) => new Date(b.operatedAt).getTime() - new Date(a.operatedAt).getTime())
     .slice(0, 300);
 }
@@ -2090,10 +2105,12 @@ async function recordGuestOperation(req, body = {}) {
   if (!action) return { ok: true, ignored: true };
 
   store.operationLogs = normalizeOperationLogs(store.operationLogs);
+  const operationIp = getOperationClientIp(req);
   store.operationLogs.push({
     id: randomId(),
     operator: adminOperation ? "管理员" : owner,
-    ip: getClientIp(req),
+    ip: operationIp,
+    ipLocation: getKnownIpLocation(operationIp),
     action,
     detail: String(body.detail || "").trim().slice(0, 240),
     path: normalizeAccessLogPath(body.path || ""),
@@ -2101,6 +2118,7 @@ async function recordGuestOperation(req, body = {}) {
   });
   store.operationLogs = store.operationLogs.slice(-1500);
   await saveStore();
+  void enrichOperationLogIpLocation(operationIp);
   return { ok: true };
 }
 
@@ -2117,6 +2135,7 @@ async function recordGuestAccess(req, url, details = {}) {
     reusable.endedAt = "";
     closeOtherOpenAccessLogs({ ip: reusable.ip, owner: reusable.owner, path: reusable.path, keepId: reusable.id, closedAt: reusable.lastSeenAt });
     await saveStore();
+    void enrichAccessLogIpLocation(reusable.ip);
     return;
   }
   const now = new Date().toISOString();
@@ -2125,6 +2144,7 @@ async function recordGuestAccess(req, url, details = {}) {
     type: details.type || "page",
     owner: accessOwner,
     ip: getClientIp(req),
+    ipLocation: "",
     method: req.method,
     path: requestPath,
     userAgent: String(req.headers["user-agent"] || "").slice(0, 240),
@@ -2139,6 +2159,7 @@ async function recordGuestAccess(req, url, details = {}) {
   closeOtherOpenAccessLogs({ ip: log.ip, owner: log.owner, path: log.path, keepId: log.id, closedAt: now });
   store.accessLogs = store.accessLogs.slice(-1000);
   await saveStore();
+  void enrichAccessLogIpLocation(log.ip);
 }
 
 async function recordGuestVisitDuration(req, body = {}) {
@@ -2169,6 +2190,7 @@ async function recordGuestVisitDuration(req, body = {}) {
       type: "page",
       owner,
       ip,
+      ipLocation: "",
       method: "GET",
       path: rawPath,
       userAgent: String(req.headers["user-agent"] || "").slice(0, 240),
@@ -2196,7 +2218,132 @@ async function recordGuestVisitDuration(req, body = {}) {
   if (!ended) closeOtherOpenAccessLogs({ ip: log.ip, owner: log.owner, path: log.path, keepId: log.id, closedAt: now });
   store.accessLogs = store.accessLogs.slice(-1000);
   await saveStore();
+  void enrichAccessLogIpLocation(log.ip);
   return { ok: true };
+}
+
+async function enrichStoredAccessLogLocations() {
+  const ips = [...new Set(store.accessLogs
+    .filter((log) => !normalizeIpLocation(log.ipLocation))
+    .map((log) => String(log.ip || "").trim())
+    .filter((ip) => ip && ip !== "-"))];
+  for (let index = 0; index < ips.length; index += 3) {
+    await Promise.allSettled(ips.slice(index, index + 3).map((ip) => enrichAccessLogIpLocation(ip)));
+  }
+}
+
+async function enrichStoredOperationLogLocations() {
+  const ips = [...new Set(store.operationLogs
+    .filter((log) => !normalizeIpLocation(log.ipLocation))
+    .map((log) => String(log.ip || "").trim())
+    .filter((ip) => ip && ip !== "-"))];
+  for (let index = 0; index < ips.length; index += 3) {
+    await Promise.allSettled(ips.slice(index, index + 3).map((ip) => enrichOperationLogIpLocation(ip)));
+  }
+}
+
+async function enrichOperationLogIpLocation(ip) {
+  const normalizedIp = normalizeIpAddress(ip);
+  const location = await enrichAccessLogIpLocation(normalizedIp);
+  if (location) await applyIpLocationToOperationLogs(normalizedIp, location);
+  return location;
+}
+
+async function enrichAccessLogIpLocation(ip) {
+  const normalizedIp = normalizeIpAddress(ip);
+  const knownLocation = getKnownIpLocation(normalizedIp);
+  if (knownLocation) {
+    await applyIpLocationToAccessLogs(normalizedIp, knownLocation);
+    return knownLocation;
+  }
+  const failedAt = ipLocationFailures.get(normalizedIp) || 0;
+  if (!normalizedIp || normalizedIp === "-" || Date.now() - failedAt < IP_LOCATION_FAILURE_TTL_MS) return "";
+  if (ipLocationLookups.has(normalizedIp)) return ipLocationLookups.get(normalizedIp);
+
+  const lookup = lookupPublicIpLocation(normalizedIp)
+    .then(async (location) => {
+      if (!location) {
+        ipLocationFailures.set(normalizedIp, Date.now());
+        return "";
+      }
+      ipLocationCache.set(normalizedIp, location);
+      ipLocationFailures.delete(normalizedIp);
+      await applyIpLocationToAccessLogs(normalizedIp, location);
+      return location;
+    })
+    .catch(() => {
+      ipLocationFailures.set(normalizedIp, Date.now());
+      return "";
+    })
+    .finally(() => ipLocationLookups.delete(normalizedIp));
+  ipLocationLookups.set(normalizedIp, lookup);
+  return lookup;
+}
+
+async function lookupPublicIpLocation(ip) {
+  if (isPrivateClientIp(ip)) return "局域网";
+  if (!isPublicIpAddress(ip)) return "";
+  const response = await fetch(`https://whois.pconline.com.cn/ipJson.jsp?ip=${encodeURIComponent(ip)}&json=true`, {
+    headers: { "User-Agent": "ZenDingNotify/0.1" },
+    signal: AbortSignal.timeout(4000)
+  });
+  if (!response.ok) return "";
+  const result = await response.json();
+  return normalizeIpLocation(result?.city || result?.pro || "");
+}
+
+async function applyIpLocationToAccessLogs(ip, location) {
+  if (!location) return;
+  let changed = false;
+  store.accessLogs.forEach((log) => {
+    if (normalizeIpAddress(log.ip) !== ip || log.ipLocation === location) return;
+    log.ipLocation = location;
+    changed = true;
+  });
+  if (changed) await saveStore();
+}
+
+async function applyIpLocationToOperationLogs(ip, location) {
+  if (!location) return;
+  let changed = false;
+  store.operationLogs.forEach((log) => {
+    if (normalizeIpAddress(log.ip) !== ip || log.ipLocation === location) return;
+    log.ipLocation = location;
+    changed = true;
+  });
+  if (changed) await saveStore();
+}
+
+function getKnownIpLocation(ip, storedLocation = "") {
+  const normalizedIp = normalizeIpAddress(ip);
+  if (isPrivateClientIp(normalizedIp)) return "局域网";
+  const location = normalizeIpLocation(storedLocation);
+  if (location) {
+    ipLocationCache.set(normalizedIp, location);
+    return location;
+  }
+  return ipLocationCache.get(normalizedIp) || "";
+}
+
+function normalizeIpAddress(ip) {
+  return String(ip || "").trim().replace(/^::ffff:/i, "").replace(/^\[|\]$/g, "");
+}
+
+function normalizeIpLocation(value) {
+  return String(value || "").trim().replace(/(?:特别行政区|自治区|自治州|地区|省|市)$/u, "").slice(0, 40);
+}
+
+function isPublicIpAddress(ip) {
+  const value = normalizeIpAddress(ip);
+  return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(value) || value.includes(":");
+}
+
+function isPrivateClientIp(ip) {
+  const value = normalizeIpAddress(ip).toLowerCase();
+  if (/^(?:127\.|10\.|192\.168\.)/.test(value)) return true;
+  const parts = value.split(".").map(Number);
+  if (parts.length === 4 && parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  return value === "localhost" || value === "::1" || value.startsWith("fc") || value.startsWith("fd") || value.startsWith("fe80:");
 }
 
 function findReusableAccessLog({ ip, owner, path, sessionId }) {
@@ -2286,6 +2433,28 @@ function getClientIp(req) {
   const realIp = String(req.headers["x-real-ip"] || "").trim();
   const socketIp = String(req.socket?.remoteAddress || "").replace(/^::ffff:/, "");
   return forwarded || realIp || socketIp || "-";
+}
+
+function getOperationClientIp(req) {
+  const ip = getClientIp(req);
+  return isLocalClientIp(ip) ? localNetworkIp || "-" : ip;
+}
+
+function getLocalNetworkIp() {
+  const addresses = Object.entries(networkInterfaces()).flatMap(([name, entries]) => {
+    return (entries || [])
+      .filter((entry) => entry.family === "IPv4" && !entry.internal)
+      .map((entry) => ({ name, address: entry.address }));
+  });
+  const preferred = addresses.find(({ name, address }) => {
+    return isPrivateClientIp(address) && !/(?:virtual|vmware|vethernet|wsl|docker|loopback|tailscale)/i.test(name);
+  });
+  return preferred?.address || addresses.find(({ address }) => isPrivateClientIp(address))?.address || addresses[0]?.address || "";
+}
+
+function normalizeOperationIp(ip) {
+  const value = normalizeIpAddress(ip);
+  return isLocalClientIp(value) ? localNetworkIp || "-" : value || "-";
 }
 
 function normalizeAccessLogPath(value) {
@@ -3171,6 +3340,7 @@ function normalizeAccessLogs(value) {
     type: String(log?.type || "page"),
     owner: String(log?.owner || ""),
     ip: String(log?.ip || "-"),
+    ipLocation: isPrivateClientIp(log?.ip) ? "局域网" : normalizeIpLocation(log?.ipLocation),
     method: String(log?.method || "GET"),
     path: String(log?.path || ""),
     userAgent: String(log?.userAgent || ""),
@@ -3190,12 +3360,13 @@ function normalizeAccessDevice(value, userAgent = "") {
   const model = normalizeDeviceText(source.model, 80) || detected.model;
   const platform = normalizeDeviceText(source.platform, 40);
   const platformVersion = normalizeDeviceText(source.platformVersion, 40);
+  const sourceBrowser = normalizeDeviceText(source.browser, 80);
   return {
     type: normalizeDeviceType(source.type, source.mobile, detected.type),
     brand: normalizeDeviceText(source.brand, 40) || inferDeviceBrand(model || detected.model, userAgent) || detected.brand,
     model,
     os: formatClientDeviceOs(platform, platformVersion) || normalizeDeviceText(source.os, 80) || detected.os,
-    browser: normalizeDeviceText(source.browser, 80) || detected.browser
+    browser: detected.browser !== "未知浏览器" ? detected.browser : sourceBrowser || detected.browser
   };
 }
 
@@ -3251,6 +3422,23 @@ function detectDeviceOs(userAgent) {
 
 function detectDeviceBrowser(userAgent) {
   const patterns = [
+    [/wxwork\/([\d.]+)/i, "企业微信内置浏览器"],
+    [/MicroMessenger\/([\d.]+)/i, "微信内置浏览器"],
+    [/(?:DingTalk\/|AliApp\(DingTalk\/)([\d.]+)/i, "钉钉内置浏览器"],
+    [/Quark\/([\d.]+)/i, "夸克浏览器"],
+    [/(?:MQQBrowser|QQBrowser)\/([\d.]+)/i, "QQ浏览器"],
+    [/(?:UCBrowser|UCWEB)\/([\d.]+)/i, "UC浏览器"],
+    [/HuaweiBrowser\/([\d.]+)/i, "华为浏览器"],
+    [/MiuiBrowser\/([\d.]+)/i, "小米浏览器"],
+    [/VivoBrowser\/([\d.]+)/i, "vivo浏览器"],
+    [/(?:HeyTapBrowser|OppoBrowser)\/([\d.]+)/i, "OPPO浏览器"],
+    [/(?:SogouMobileBrowser|MetaSr)[\/]?([\d.]*)/i, "搜狗浏览器"],
+    [/Maxthon\/([\d.]+)/i, "傲游浏览器"],
+    [/LBBROWSER[\/]?([\d.]*)/i, "猎豹浏览器"],
+    [/(?:BIDUBrowser|BaiduBrowser)\/([\d.]+)/i, "百度浏览器"],
+    [/(?:360SE|360EE)[\/]?([\d.]*)/i, "360浏览器"],
+    [/AlookBrowser\/([\d.]+)/i, "Alook浏览器"],
+    [/SamsungBrowser\/([\d.]+)/i, "Samsung浏览器"],
     [/Edg(?:A|iOS)?\/([\d.]+)/i, "Edge"],
     [/OPR\/([\d.]+)/i, "Opera"],
     [/Firefox\/([\d.]+)/i, "Firefox"],
@@ -3259,8 +3447,12 @@ function detectDeviceBrowser(userAgent) {
   ];
   for (const [pattern, name] of patterns) {
     const match = userAgent.match(pattern);
-    if (match) return `${name} ${match[1].split(".")[0]}`;
+    if (match) {
+      const version = String(match[1] || "").split(".")[0];
+      return version ? `${name} ${version}` : name;
+    }
   }
+  if (/(?:iPhone|iPad|iPod).*AppleWebKit.*Mobile/i.test(userAgent)) return "Safari";
   return "未知浏览器";
 }
 
@@ -3289,7 +3481,8 @@ function normalizeOperationLogs(value) {
   return logs.map((log) => ({
     id: String(log?.id || randomId()),
     operator: String(log?.operator || ""),
-    ip: String(log?.ip || "-"),
+    ip: normalizeOperationIp(log?.ip),
+    ipLocation: isPrivateClientIp(normalizeOperationIp(log?.ip)) ? "局域网" : normalizeIpLocation(log?.ipLocation),
     action: String(log?.action || ""),
     detail: String(log?.detail || ""),
     path: String(log?.path || ""),

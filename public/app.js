@@ -40,6 +40,8 @@ const state = {
   accessAwayTimer: null,
   mobilePendingPanel: "urgent",
   mobileOwnerMetric: "open",
+  mobileOwnerMetricScrollDirection: 0,
+  mobileOwnerMetricScrollLeft: 0,
   mobileLogLimits: {
     logs: 10,
     accessLogs: 10,
@@ -557,6 +559,7 @@ function showLoginScreen() {
   document.getElementById("loginScreen").classList.remove("hidden");
   document.getElementById("logoutBtn").classList.add("hidden");
   renderCurrentRole();
+  finishAppBoot();
   document.getElementById("adminPassword").focus();
 }
 
@@ -590,6 +593,7 @@ function showGuestLoginScreen(session) {
       <a class="secondary guest-error-link" href="/guest">返回访客总览</a>
     </form>
   `;
+  finishAppBoot();
   document.getElementById("guestLoginForm").addEventListener("submit", loginGuestOwner);
   document.getElementById("guestPassword").focus();
 }
@@ -598,6 +602,12 @@ function showAppShell() {
   document.body.classList.remove("login-mode");
   document.getElementById("loginScreen").classList.add("hidden");
   renderCurrentRole();
+  finishAppBoot();
+}
+
+function finishAppBoot() {
+  document.body.classList.remove("app-booting");
+  document.body.removeAttribute("aria-busy");
 }
 
 function renderCurrentRole() {
@@ -1325,6 +1335,7 @@ function showGuestError(message) {
       <a class="secondary guest-error-link" href="/guest">返回访客总览</a>
     </div>
   `;
+  finishAppBoot();
 }
 
 function getViewFromRoute() {
@@ -2183,6 +2194,8 @@ function renderMobileOwnerComparison(owners) {
     { key: "returned", label: "今日转入", mode: "ownerTodayReturned", tone: "incoming", value: (owner) => Number(owner.todayReturned || 0) }
   ];
   const selected = options.find((option) => option.key === state.mobileOwnerMetric) || options[0];
+  const scrollDirection = Number(state.mobileOwnerMetricScrollDirection) || 0;
+  state.mobileOwnerMetricScrollDirection = 0;
   state.mobileOwnerMetric = selected.key;
   const rows = [...(owners || [])]
     .map((owner) => ({ owner, value: selected.value(owner) }))
@@ -2210,27 +2223,52 @@ function renderMobileOwnerComparison(owners) {
       `).join("") || '<div class="empty">暂无负责人数据</div>'}
     </div>
   `;
+  const metricTabs = container.querySelector(".mobile-owner-metric-tabs");
+  if (metricTabs) {
+    metricTabs.scrollLeft = Math.max(0, Number(state.mobileOwnerMetricScrollLeft) || 0);
+    metricTabs.addEventListener("scroll", () => {
+      state.mobileOwnerMetricScrollLeft = metricTabs.scrollLeft;
+    }, { passive: true });
+  }
   container.querySelectorAll("[data-mobile-owner-metric]").forEach((button) => {
     button.addEventListener("click", () => {
+      const currentIndex = options.findIndex((option) => option.key === state.mobileOwnerMetric);
+      const nextIndex = options.findIndex((option) => option.key === button.dataset.mobileOwnerMetric);
+      state.mobileOwnerMetricScrollLeft = metricTabs?.scrollLeft || 0;
+      state.mobileOwnerMetricScrollDirection = Math.sign(nextIndex - currentIndex);
       state.mobileOwnerMetric = button.dataset.mobileOwnerMetric;
       renderOverview();
     });
   });
-  scrollActiveMobileOwnerMetricTab(container);
+  scrollActiveMobileOwnerMetricTab(container, scrollDirection);
 }
 
-function scrollActiveMobileOwnerMetricTab(container) {
+function scrollActiveMobileOwnerMetricTab(container, direction = 0) {
   window.requestAnimationFrame(() => {
     const tabs = container?.querySelector(".mobile-owner-metric-tabs");
     const activeTab = tabs?.querySelector("[data-mobile-owner-metric].active");
     if (!tabs || !activeTab) return;
     const tabsRect = tabs.getBoundingClientRect();
     const activeRect = activeTab.getBoundingClientRect();
-    const isFullyVisible = activeRect.left >= tabsRect.left - 1
-      && activeRect.right <= tabsRect.right + 1;
+    const adjacentTab = direction > 0
+      ? activeTab.nextElementSibling
+      : direction < 0
+        ? activeTab.previousElementSibling
+        : null;
+    const adjacentRect = adjacentTab?.getBoundingClientRect() || activeRect;
+    const targetRect = {
+      left: Math.min(activeRect.left, adjacentRect.left),
+      right: Math.max(activeRect.right, adjacentRect.right)
+    };
+    const isFullyVisible = targetRect.left >= tabsRect.left - 1
+      && targetRect.right <= tabsRect.right + 1;
     if (isFullyVisible) return;
-    const targetLeft = tabs.scrollLeft + activeRect.left - tabsRect.left
-      - (tabs.clientWidth - activeRect.width) / 2;
+    let targetLeft = tabs.scrollLeft;
+    if (targetRect.right > tabsRect.right) {
+      targetLeft += targetRect.right - tabsRect.right + 6;
+    } else if (targetRect.left < tabsRect.left) {
+      targetLeft -= tabsRect.left - targetRect.left + 6;
+    }
     tabs.scrollTo({
       left: Math.max(0, targetLeft),
       behavior: "smooth"
@@ -3311,7 +3349,7 @@ function renderAccessLogs() {
               <td>${escapeHtml(formatTime(log.accessedAt))}</td>
               <td>${escapeHtml(formatDuration(log.durationMs))}</td>
               <td>${sessionStatusBadge(log.sessionStatus)}</td>
-              <td>${escapeHtml(log.ip || "-")}</td>
+              <td>${escapeHtml(formatAccessIp(log))}</td>
               <td>${escapeHtml(formatAccessDevice(log.device))}</td>
               <td>${escapeHtml(log.owner || "总览")}</td>
               <td>${escapeHtml(accessLogTypeText(log.type))}</td>
@@ -3343,6 +3381,13 @@ function getRecentAccessLogs() {
 function accessLogTypeText(type) {
   if (type === "page") return "页面访问";
   return type || "-";
+}
+
+function formatAccessIp(log = {}) {
+  const ip = String(log.ip || "-").trim() || "-";
+  const location = String(log.ipLocation || "").trim();
+  if (location === "局域网") return `${ip}(局域网)`;
+  return location ? `${ip}（${location}）` : ip;
 }
 
 function formatAccessDevice(device = {}) {
@@ -3388,7 +3433,7 @@ function renderOperationLogs() {
           ${logs.length ? logs.map((log) => `
             <tr class="mobile-log-card is-operation">
               <td>${escapeHtml(formatTime(log.operatedAt))}</td>
-              <td>${escapeHtml(log.ip || "-")}</td>
+              <td>${escapeHtml(formatAccessIp(log))}</td>
               <td>${escapeHtml(log.operator || "-")}</td>
               <td>${formatOperationAction(log)}</td>
               <td>${escapeHtml(log.path || "-")}</td>
