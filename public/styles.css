@@ -415,7 +415,7 @@
   .logs-data-table td:nth-child(1),
   .logs-data-table td:nth-child(3),
   .access-logs-data-table td:nth-child(1),
-  .access-logs-data-table td:nth-child(7),
+  .access-logs-data-table td:nth-child(8),
   .operation-logs-data-table td:nth-child(1),
   .operation-logs-data-table td:nth-child(4),
   .sync-logs-data-table td:nth-child(1),
@@ -432,7 +432,7 @@
     line-height: 1.5;
   }
 
-  .access-logs-data-table td:nth-child(7) {
+  .access-logs-data-table td:nth-child(8) {
     padding-top: 7px;
     border-top: 1px solid #edf0f4;
     color: #64748b;
@@ -2450,7 +2450,7 @@ tbody tr:hover {
 
 .access-logs-data-table {
   table-layout: fixed;
-  min-width: 1040px;
+  min-width: 1280px;
 }
 
 .access-logs-data-table th:nth-child(1),
@@ -2460,7 +2460,7 @@ tbody tr:hover {
 
 .access-logs-data-table th:nth-child(2),
 .access-logs-data-table td:nth-child(2) {
-  width: 110px;
+  width: 100px;
 }
 
 .access-logs-data-table th:nth-child(3),
@@ -2470,21 +2470,26 @@ tbody tr:hover {
 
 .access-logs-data-table th:nth-child(4),
 .access-logs-data-table td:nth-child(4) {
-  width: 150px;
+  width: 140px;
 }
 
 .access-logs-data-table th:nth-child(5),
 .access-logs-data-table td:nth-child(5) {
-  width: 140px;
+  width: 260px;
 }
 
 .access-logs-data-table th:nth-child(6),
 .access-logs-data-table td:nth-child(6) {
-  width: 110px;
+  width: 140px;
 }
 
 .access-logs-data-table th:nth-child(7),
 .access-logs-data-table td:nth-child(7) {
+  width: 110px;
+}
+
+.access-logs-data-table th:nth-child(8),
+.access-logs-data-table td:nth-child(8) {
   width: 250px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4280,7 +4285,7 @@ tbody tr:hover {
   }
 
   .access-logs-data-table {
-    min-width: 980px;
+    min-width: 1180px;
   }
 
   .operation-logs-data-table {
@@ -4990,9 +4995,10 @@ tbody tr:hover {
   .access-logs-data-table td:nth-child(2)::before { content: "访问时长"; }
   .access-logs-data-table td:nth-child(3)::before { content: "会话状态"; }
   .access-logs-data-table td:nth-child(4)::before { content: "IP"; }
-  .access-logs-data-table td:nth-child(5)::before { content: "访问对象"; }
-  .access-logs-data-table td:nth-child(6)::before { content: "类型"; }
-  .access-logs-data-table td:nth-child(7)::before { content: "路径"; }
+  .access-logs-data-table td:nth-child(5)::before { content: "终端"; }
+  .access-logs-data-table td:nth-child(6)::before { content: "访问对象"; }
+  .access-logs-data-table td:nth-child(7)::before { content: "类型"; }
+  .access-logs-data-table td:nth-child(8)::before { content: "路径"; }
 
   .operation-logs-data-table td:nth-child(1)::before { content: "操作时间"; }
   .operation-logs-data-table td:nth-child(2)::before { content: "IP"; }
@@ -5925,8 +5931,14 @@ tbody tr:hover {
     grid-column: 1 / -1;
   }
 
+  .access-logs-data-table .mobile-log-card > td:nth-child(5) {
+    grid-column: 1 / -1;
+    color: #334155;
+    line-height: 1.45;
+  }
+
   .logs-data-table .mobile-log-card > td:nth-child(2),
-  .access-logs-data-table .mobile-log-card > td:nth-child(6),
+  .access-logs-data-table .mobile-log-card > td:nth-child(7),
   .sync-logs-data-table .mobile-log-card > td:nth-child(4) {
     color: #9a6700;
     font-weight: 650;
@@ -5940,7 +5952,7 @@ tbody tr:hover {
   .logs-data-table .mobile-log-card > td:nth-child(5),
   .logs-data-table .mobile-log-card > td:nth-child(7),
   .access-logs-data-table .mobile-log-card > td:nth-child(2),
-  .access-logs-data-table .mobile-log-card > td:nth-child(5),
+  .access-logs-data-table .mobile-log-card > td:nth-child(6),
   .operation-logs-data-table .mobile-log-card > td:nth-child(3),
   .sync-logs-data-table .mobile-log-card > td:nth-child(2),
   .sync-logs-data-table .mobile-log-card > td:nth-child(5) {
@@ -5955,7 +5967,7 @@ tbody tr:hover {
   }
 
   .access-logs-data-table .mobile-log-card > td:nth-child(4),
-  .access-logs-data-table .mobile-log-card > td:nth-child(7),
+  .access-logs-data-table .mobile-log-card > td:nth-child(8),
   .operation-logs-data-table .mobile-log-card > td:nth-child(2),
   .operation-logs-data-table .mobile-log-card > td:nth-child(5) {
     color: #64748b;
@@ -5964,7 +5976,7 @@ tbody tr:hover {
   .logs-data-table .mobile-log-card > td:nth-child(3),
   .operation-logs-data-table .mobile-log-card > td:nth-child(4),
   .sync-logs-data-table .mobile-log-card > td:nth-child(6),
-  .access-logs-data-table .mobile-log-card > td:nth-child(7) {
+  .access-logs-data-table .mobile-log-card > td:nth-child(8) {
     min-height: 0;
     padding: 6px 2px 0;
     border-top: 1px solid #edf1f5;

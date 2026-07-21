@@ -901,9 +901,11 @@ function startAccessVisitTracking() {
   state.accessVisit = {
     sessionId: createClientSessionId(),
     startedAt: Date.now(),
+    device: getBasicAccessDeviceInfo(),
     timer: window.setInterval(() => sendAccessVisitDuration(), 5000)
   };
   sendAccessVisitDuration();
+  enrichAccessDeviceInfo(state.accessVisit);
 }
 
 function scheduleAccessAwayReport() {
@@ -931,7 +933,8 @@ function sendAccessVisitDuration(options = {}) {
     path: window.location.pathname,
     durationMs: Date.now() - state.accessVisit.startedAt,
     ended: Boolean(options.ended),
-    away: Boolean(options.away)
+    away: Boolean(options.away),
+    device: state.accessVisit.device
   };
   const body = JSON.stringify(payload);
   if (options.beacon && navigator.sendBeacon) {
@@ -944,6 +947,36 @@ function sendAccessVisitDuration(options = {}) {
     body,
     keepalive: true
   }).catch(() => {});
+}
+
+function getBasicAccessDeviceInfo() {
+  const userAgent = navigator.userAgent || "";
+  return {
+    type: /iPad|Tablet|PlayBook|Silk/i.test(userAgent) ? "平板" : /Mobile|iPhone|iPod|Android/i.test(userAgent) ? "手机" : "电脑",
+    mobile: /Mobile|iPhone|iPod|Android/i.test(userAgent),
+    platform: navigator.userAgentData?.platform || "",
+    platformVersion: "",
+    model: ""
+  };
+}
+
+async function enrichAccessDeviceInfo(visit) {
+  const userAgentData = navigator.userAgentData;
+  if (!userAgentData?.getHighEntropyValues) return;
+  try {
+    const details = await userAgentData.getHighEntropyValues(["model", "platform", "platformVersion"]);
+    if (state.accessVisit !== visit) return;
+    visit.device = {
+      ...visit.device,
+      mobile: Boolean(details.mobile ?? userAgentData.mobile),
+      model: details.model || "",
+      platform: details.platform || userAgentData.platform || visit.device.platform,
+      platformVersion: details.platformVersion || ""
+    };
+    sendAccessVisitDuration();
+  } catch {
+    // Browsers may withhold high-entropy device details; the User-Agent fallback remains available.
+  }
 }
 
 function createClientSessionId() {
@@ -2476,6 +2509,7 @@ function renderAccessLogs() {
             <th>访问时长</th>
             <th>会话状态</th>
             <th>IP</th>
+            <th>终端</th>
             <th>访问对象</th>
             <th>类型</th>
             <th>路径</th>
@@ -2488,13 +2522,14 @@ function renderAccessLogs() {
               <td>${escapeHtml(formatDuration(log.durationMs))}</td>
               <td>${sessionStatusBadge(log.sessionStatus)}</td>
               <td>${escapeHtml(log.ip || "-")}</td>
+              <td>${escapeHtml(formatAccessDevice(log.device))}</td>
               <td>${escapeHtml(log.owner || "总览")}</td>
               <td>${escapeHtml(accessLogTypeText(log.type))}</td>
               <td>${escapeHtml(log.path || "-")}</td>
             </tr>
           `).join("") : `
             <tr>
-              <td class="table-empty" colspan="7">暂无访问记录</td>
+              <td class="table-empty" colspan="8">暂无访问记录</td>
             </tr>
           `}
         </tbody>
@@ -2518,6 +2553,11 @@ function getRecentAccessLogs() {
 function accessLogTypeText(type) {
   if (type === "page") return "页面访问";
   return type || "-";
+}
+
+function formatAccessDevice(device = {}) {
+  const hardware = [device.brand, device.model].filter(Boolean).join(" ") || device.type || "未知终端";
+  return [hardware, device.os, device.browser].filter(Boolean).join(" · ");
 }
 
 function sessionStatusBadge(status) {

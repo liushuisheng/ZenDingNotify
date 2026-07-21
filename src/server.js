@@ -1847,6 +1847,7 @@ async function recordGuestAccess(req, url, details = {}) {
     method: req.method,
     path: requestPath,
     userAgent: String(req.headers["user-agent"] || "").slice(0, 240),
+    device: detectAccessDevice(req.headers["user-agent"]),
     accessedAt: now,
     durationMs: 0,
     lastSeenAt: "",
@@ -1901,6 +1902,7 @@ async function recordGuestVisitDuration(req, body = {}) {
 
   log.sessionId = sessionId || log.sessionId || "";
   log.owner = owner || log.owner || "";
+  log.device = normalizeAccessDevice(body.device, log.userAgent || req.headers["user-agent"]);
   log.durationMs = Math.max(Number(log.durationMs) || 0, durationMs);
   log.lastSeenAt = now;
   if (ended) log.endedAt = now;
@@ -2871,8 +2873,109 @@ function normalizeAccessLogs(value) {
     lastSeenAt: String(log?.lastSeenAt || ""),
     endedAt: String(log?.endedAt || ""),
     awayAt: String(log?.awayAt || ""),
-    sessionId: String(log?.sessionId || "")
+    sessionId: String(log?.sessionId || ""),
+    device: normalizeAccessDevice(log?.device, log?.userAgent)
   })).filter((log) => log.accessedAt).slice(-1000);
+}
+
+function normalizeAccessDevice(value, userAgent = "") {
+  const detected = detectAccessDevice(userAgent);
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const model = normalizeDeviceText(source.model, 80) || detected.model;
+  const platform = normalizeDeviceText(source.platform, 40);
+  const platformVersion = normalizeDeviceText(source.platformVersion, 40);
+  return {
+    type: normalizeDeviceType(source.type, source.mobile, detected.type),
+    brand: normalizeDeviceText(source.brand, 40) || inferDeviceBrand(model || detected.model, userAgent) || detected.brand,
+    model,
+    os: formatClientDeviceOs(platform, platformVersion) || normalizeDeviceText(source.os, 80) || detected.os,
+    browser: normalizeDeviceText(source.browser, 80) || detected.browser
+  };
+}
+
+function detectAccessDevice(userAgent = "") {
+  const ua = String(userAgent || "").slice(0, 500);
+  const tablet = /iPad|Tablet|PlayBook|Silk/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua));
+  const mobile = /Mobile|iPhone|iPod|Android.*Mobile|Windows Phone/i.test(ua);
+  const model = extractDeviceModel(ua);
+  return {
+    type: tablet ? "平板" : mobile ? "手机" : "电脑",
+    brand: inferDeviceBrand(model, ua),
+    model,
+    os: detectDeviceOs(ua),
+    browser: detectDeviceBrowser(ua)
+  };
+}
+
+function extractDeviceModel(userAgent) {
+  if (/iPhone/i.test(userAgent)) return "iPhone";
+  if (/iPad/i.test(userAgent)) return "iPad";
+  const android = userAgent.match(/Android[^;)]*;\s*(?:[^;)]*;\s*)?([^;)]*?)(?:\s+Build\/|;\s*wv|\))/i);
+  if (!android) return "";
+  const model = android[1].replace(/\b(?:zh-cn|zh-CN|en-us|en-US)\b/gi, "").trim();
+  return /^(?:wv|mobile)$/i.test(model) ? "" : normalizeDeviceText(model, 80);
+}
+
+function inferDeviceBrand(model = "", userAgent = "") {
+  const text = `${model} ${userAgent}`;
+  if (/iPhone|iPad|iPod|Macintosh/i.test(text)) return "Apple";
+  if (/HUAWEI|Huawei|JAD-|NOH-|ANA-|LIO-/i.test(text)) return "Huawei";
+  if (/HONOR|ANY-|BVL-|ELP-/i.test(text)) return "HONOR";
+  if (/Xiaomi|Redmi|\bMI\s|M2\d{3}/i.test(text)) return "Xiaomi";
+  if (/OPPO|\bCPH\d+/i.test(text)) return "OPPO";
+  if (/vivo|\bV\d{4}/i.test(text)) return "vivo";
+  if (/OnePlus|\bNE\d{4}/i.test(text)) return "OnePlus";
+  if (/Samsung|\bSM-[A-Z0-9]+/i.test(text)) return "Samsung";
+  if (/Pixel/i.test(text)) return "Google";
+  return "";
+}
+
+function detectDeviceOs(userAgent) {
+  const windows = userAgent.match(/Windows NT\s+([\d.]+)/i);
+  if (windows) return `Windows ${windows[1] === "10.0" ? "10/11" : windows[1]}`;
+  const android = userAgent.match(/Android\s+([\d.]+)/i);
+  if (android) return `Android ${android[1]}`;
+  const ios = userAgent.match(/(?:CPU (?:iPhone )?OS|iPhone OS)\s+([\d_]+)/i);
+  if (ios) return `iOS ${ios[1].replace(/_/g, ".")}`;
+  const mac = userAgent.match(/Mac OS X\s+([\d_]+)/i);
+  if (mac) return `macOS ${mac[1].replace(/_/g, ".")}`;
+  if (/Linux/i.test(userAgent)) return "Linux";
+  return "未知系统";
+}
+
+function detectDeviceBrowser(userAgent) {
+  const patterns = [
+    [/Edg(?:A|iOS)?\/([\d.]+)/i, "Edge"],
+    [/OPR\/([\d.]+)/i, "Opera"],
+    [/Firefox\/([\d.]+)/i, "Firefox"],
+    [/(?:Chrome|CriOS)\/([\d.]+)/i, "Chrome"],
+    [/Version\/([\d.]+).*Safari/i, "Safari"]
+  ];
+  for (const [pattern, name] of patterns) {
+    const match = userAgent.match(pattern);
+    if (match) return `${name} ${match[1].split(".")[0]}`;
+  }
+  return "未知浏览器";
+}
+
+function normalizeDeviceText(value, maxLength) {
+  return String(value || "").replace(/[\u0000-\u001F\u007F]/g, "").trim().slice(0, maxLength);
+}
+
+function normalizeDeviceType(value, mobile, fallback) {
+  const type = normalizeDeviceText(value, 12);
+  if (["手机", "平板", "电脑"].includes(type)) return type;
+  if (typeof mobile === "boolean") return mobile ? "手机" : fallback;
+  return fallback;
+}
+
+function formatClientDeviceOs(platform, version) {
+  if (!["Windows", "macOS", "Android", "iOS", "Linux", "Chrome OS"].includes(platform)) return "";
+  if (platform === "Windows" && version) {
+    const major = Number.parseInt(version.split(".")[0], 10);
+    if (Number.isFinite(major)) return `Windows ${major >= 13 ? "11" : "10"}`;
+  }
+  return `${platform}${version ? ` ${version}` : ""}`;
 }
 
 function normalizeOperationLogs(value) {
