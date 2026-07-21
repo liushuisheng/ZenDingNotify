@@ -6156,7 +6156,7 @@ tbody tr:hover {
   .mobile-log-back-top {
     position: fixed;
     right: 14px;
-    bottom: calc(18px + env(safe-area-inset-bottom));
+    bottom: calc(28px + env(safe-area-inset-bottom));
     z-index: 72;
     display: grid;
     width: 42px;
@@ -6384,7 +6384,7 @@ tbody tr:hover {
   }
 
   .main.settings-mode ~ .mobile-log-back-top {
-    bottom: calc(76px + env(safe-area-inset-bottom));
+    bottom: calc(86px + env(safe-area-inset-bottom));
   }
 
   #defectsView .condition-bar {
