@@ -3565,7 +3565,10 @@ function metricFoot(label) {
 
 function metricLabelClass(label) {
   const length = Array.from(String(label || "").replace(/\s/g, "")).length;
-  return length > 6 ? " metric-label-compact" : "";
+  if (length > 8) return " metric-label-tight";
+  if (length > 6) return " metric-label-condensed";
+  if (length > 4) return " metric-label-compact";
+  return "";
 }
 
 function metricIcon(label) {

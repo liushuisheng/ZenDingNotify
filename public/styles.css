@@ -5242,7 +5242,7 @@ tbody tr:hover {
     max-width: none;
     height: 80px;
     min-height: 80px;
-    padding: 5px;
+    padding: 5px 3px;
     flex: none;
   }
 
@@ -5263,22 +5263,50 @@ tbody tr:hover {
   }
 
   body.guest-owner-mode #overviewView .metric-label {
-    min-height: 20px;
+    display: block;
+    overflow: visible;
+    min-height: 12px;
     color: #334155;
     font-size: 11px;
     font-weight: 600;
     line-height: 1.1;
-    -webkit-line-clamp: 2;
+    white-space: nowrap;
+    -webkit-line-clamp: unset;
   }
 
   body.guest-owner-mode #overviewView .metric-label.metric-label-compact {
     font-size: 9.5px;
   }
 
+  body.guest-owner-mode #overviewView .metric-label.metric-label-condensed {
+    font-size: 8.5px;
+  }
+
+  body.guest-owner-mode #overviewView .metric-label.metric-label-tight {
+    font-size: 7.5px;
+  }
+
   body.guest-owner-mode #overviewView .metric strong {
     margin-top: 1px;
+    color: #1d4ed8;
     font-size: 20px;
     line-height: 1;
+  }
+
+  body.guest-owner-mode #overviewView .metric.done strong {
+    color: #047857;
+  }
+
+  body.guest-owner-mode #overviewView .metric.urgent strong {
+    color: #dc2626;
+  }
+
+  body.guest-owner-mode #overviewView .metric.normal strong {
+    color: #b45309;
+  }
+
+  body.guest-owner-mode #overviewView .metric.total strong {
+    color: #4f46e5;
   }
 
   .mobile-pending-switch {
