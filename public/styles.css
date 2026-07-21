@@ -6410,7 +6410,7 @@ tbody tr:hover {
   #defectsTable .defects-data-table tr {
     position: relative;
     grid-template-columns: max-content max-content max-content minmax(0, 1fr);
-    gap: 8px 6px;
+    gap: 8px 3px;
     overflow: hidden;
     padding: 13px 14px 12px 13px;
     border: 1px solid rgba(214, 222, 233, 0.78);
@@ -6439,7 +6439,7 @@ tbody tr:hover {
     grid-column: 1;
     align-self: center;
     min-height: 24px;
-    padding: 3px 8px;
+    padding: 3px 7px;
     border: 1px solid #e7ebf1;
     background: #f7f9fc;
     color: #66758a;
@@ -6473,7 +6473,7 @@ tbody tr:hover {
 
   #defectsTable .defects-data-table .table-badge {
     min-height: 24px;
-    padding: 3px 9px;
+    padding: 3px 7px;
     font-size: 11px;
     line-height: 16px;
   }
