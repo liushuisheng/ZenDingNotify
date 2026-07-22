@@ -2540,7 +2540,7 @@ tbody tr:hover {
 
 .access-logs-data-table {
   table-layout: fixed;
-  min-width: 1280px;
+  min-width: 1340px;
 }
 
 .access-logs-data-table th:nth-child(1),
@@ -2560,7 +2560,10 @@ tbody tr:hover {
 
 .access-logs-data-table th:nth-child(4),
 .access-logs-data-table td:nth-child(4) {
-  width: 140px;
+  width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .access-logs-data-table th:nth-child(5),
@@ -7113,7 +7116,7 @@ body.trend-snapshot-open { overflow: hidden; }
 .trend-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 16px;
   margin-bottom: 0;
 }
@@ -7376,7 +7379,11 @@ body.trend-snapshot-open { overflow: hidden; }
     padding: 3px;
   }
 
-  .trend-range-tabs button { min-height: 32px; padding: 0 8px; }
+  .trend-range-tabs button {
+    min-height: 32px;
+    padding: 0 8px;
+    font-size: 13px;
+  }
   .trend-range-hint { display: none; }
 
   .trend-summary {
