@@ -3387,6 +3387,7 @@ function formatAccessIp(log = {}) {
   const ip = String(log.ip || "-").trim() || "-";
   const location = String(log.ipLocation || "").trim();
   if (location === "局域网") return `${ip}(局域网)`;
+  if (/[\uFFFD]|锟斤拷|ï¿½/u.test(location)) return ip;
   return location ? `${ip}（${location}）` : ip;
 }
 

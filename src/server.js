@@ -2288,7 +2288,8 @@ async function lookupPublicIpLocation(ip) {
     signal: AbortSignal.timeout(4000)
   });
   if (!response.ok) return "";
-  const result = await response.json();
+  const responseBody = await response.arrayBuffer();
+  const result = JSON.parse(new TextDecoder("gb18030").decode(responseBody).replace(/^\uFEFF/u, ""));
   return normalizeIpLocation(result?.city || result?.pro || "");
 }
 
@@ -2330,7 +2331,9 @@ function normalizeIpAddress(ip) {
 }
 
 function normalizeIpLocation(value) {
-  return String(value || "").trim().replace(/(?:特别行政区|自治区|自治州|地区|省|市)$/u, "").slice(0, 40);
+  const location = String(value || "").trim();
+  if (/[\uFFFD]|锟斤拷|ï¿½/u.test(location)) return "";
+  return location.replace(/(?:特别行政区|自治区|自治州|地区|省|市)$/u, "").slice(0, 40);
 }
 
 function isPublicIpAddress(ip) {
@@ -3117,10 +3120,46 @@ async function proxyApiRequest(req, res, url) {
     : [upstream.headers.get("set-cookie")].filter(Boolean);
   if (setCookies.length) responseHeaders["set-cookie"] = setCookies;
 
-  const responseBody = Buffer.from(await upstream.arrayBuffer());
+  let responseBody = Buffer.from(await upstream.arrayBuffer());
+  if (req.method === "GET" && upstream.ok) {
+    responseBody = await repairProxiedLogIpLocations(url.pathname, responseBody);
+  }
   responseHeaders["content-length"] = String(responseBody.length);
   res.writeHead(upstream.status, responseHeaders);
   res.end(responseBody);
+}
+
+async function repairProxiedLogIpLocations(pathname, responseBody) {
+  if (!["/api/access-logs", "/api/operation-logs"].includes(pathname)) return responseBody;
+
+  let payload;
+  try {
+    payload = JSON.parse(responseBody.toString("utf8"));
+  } catch {
+    return responseBody;
+  }
+
+  const logs = Array.isArray(payload?.logs) ? payload.logs : [];
+  const ips = [...new Set(logs
+    .filter((log) => !isPrivateClientIp(log?.ip) && !normalizeIpLocation(log?.ipLocation))
+    .map((log) => normalizeIpAddress(log?.ip))
+    .filter((ip) => ip && ip !== "-"))];
+  const resolvedLocations = new Map();
+  await Promise.allSettled(ips.map(async (ip) => {
+    const cached = normalizeIpLocation(ipLocationCache.get(ip));
+    const location = cached || await lookupPublicIpLocation(ip);
+    if (location) {
+      ipLocationCache.set(ip, location);
+      resolvedLocations.set(ip, location);
+    }
+  }));
+
+  logs.forEach((log) => {
+    const ip = normalizeIpAddress(log?.ip);
+    if (isPrivateClientIp(ip)) log.ipLocation = "局域网";
+    else log.ipLocation = normalizeIpLocation(log?.ipLocation) || resolvedLocations.get(ip) || "";
+  });
+  return Buffer.from(JSON.stringify(payload), "utf8");
 }
 
 async function readRequestBuffer(req) {
